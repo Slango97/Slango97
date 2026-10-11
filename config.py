@@ -90,6 +90,19 @@ class RiskConfig:
     high_vol_risk_mult: float = 0.70
     expansion_risk_mult: float = 0.80
     news_caution_risk_mult: float = 0.60
+    # V5.7 exposure scaling (Strategies Summary: drawdown-aware leverage + volatility targeting). Every factor is
+    # <= 1: scaling can only REDUCE the per-trade risk, never raise it above the configured value.
+    dd_scaling: bool = True
+    dd_scale_start_pct: float = 2.0        # drawdown from the equity peak where risk starts to shrink
+    dd_scale_full_pct: float = 6.0         # drawdown where the floor is reached (the hard halt stays max_drawdown_pct)
+    dd_scale_floor: float = 0.35
+    vol_scaling: bool = True
+    vol_scale_atr_ratio: float = 1.3       # ATR above this multiple of its recent average shrinks risk ~1/ratio
+    vol_scale_floor: float = 0.5
+    equity_vol_target_pct: float = 12.0    # annualised volatility target of the ACCOUNT's own daily returns
+    equity_vol_min_days: int = 10
+    equity_vol_floor: float = 0.5
+    exposure_scale_floor: float = 0.25     # combined multiplier never below this (smaller is a pause, not sizing)
 
 
 @dataclass(frozen=True)

@@ -45,6 +45,44 @@ def calendar_risk_multiplier(cfg, configured, working):
     return m, f"calendar redundancy {'lost' if configured >= 2 else 'unavailable'} ({working}/{configured} vendors): risk x{m:.2f}"
 
 
+def exposure_scale(rc, dd_pct, atr_ratio=None, day_equities=None, periods_per_year=252):
+    """V5.7 exposure scaling shared by live trading and the backtester. Returns (multiplier, parts).
+
+    * drawdown: 1.0 up to dd_scale_start_pct below the equity peak, linear down to dd_scale_floor at
+      dd_scale_full_pct (recovers automatically as equity recovers toward the peak);
+    * market volatility: ATR above vol_scale_atr_ratio x its recent average shrinks risk by threshold/ratio;
+    * account volatility: realised annualised volatility of the account's daily equity above
+      equity_vol_target_pct shrinks risk by target/realised (needs equity_vol_min_days of history).
+    Factors multiply; the product is floored at exposure_scale_floor and capped at 1.0 (never increases risk)."""
+    parts = {}
+    if getattr(rc, "dd_scaling", False) and dd_pct is not None:
+        lo, hi, fl = rc.dd_scale_start_pct, max(rc.dd_scale_full_pct, rc.dd_scale_start_pct + 1e-9), rc.dd_scale_floor
+        dd = max(0.0, float(dd_pct))
+        parts["drawdown"] = 1.0 if dd <= lo else fl if dd >= hi else 1.0 - (1.0 - fl) * (dd - lo) / (hi - lo)
+    if getattr(rc, "vol_scaling", False):
+        try:
+            ratio = float(atr_ratio)
+        except (TypeError, ValueError):
+            ratio = None
+        if ratio is not None and math.isfinite(ratio) and ratio > rc.vol_scale_atr_ratio:
+            parts["market_vol"] = max(rc.vol_scale_floor, rc.vol_scale_atr_ratio / ratio)
+        eqs = [float(x) for x in (day_equities or []) if x and float(x) > 0]
+        if len(eqs) >= rc.equity_vol_min_days + 1:
+            rets = [math.log(b / a) for a, b in zip(eqs[:-1], eqs[1:])]
+            mu = sum(rets) / len(rets)
+            sd = math.sqrt(sum((x - mu) ** 2 for x in rets) / (len(rets) - 1))
+            realised = sd * math.sqrt(periods_per_year) * 100
+            parts["account_vol_pct"] = round(realised, 2)
+            if realised > rc.equity_vol_target_pct:
+                parts["account_vol"] = max(rc.equity_vol_floor, rc.equity_vol_target_pct / realised)
+    mult = 1.0
+    for k in ("drawdown", "market_vol", "account_vol"):
+        if k in parts:
+            mult *= parts[k]
+    mult = min(1.0, max(rc.exposure_scale_floor, mult)) if mult < 1.0 else 1.0
+    return round(mult, 4), {k: (round(v, 4) if isinstance(v, float) else v) for k, v in parts.items()}
+
+
 class RiskCore:
     """Pure risk rules (no MT5 calls) so live trading and the backtester behave identically."""
 
@@ -136,6 +174,9 @@ class RiskEngine:
         week = str((now - timedelta(days=now.weekday())).date())
         if r.get("day") != today:
             r.update(day=today, day_start_equity=eq, trades_today=0)
+            hist = r.setdefault("day_equities", [])     # V5.7 account-volatility estimate (one point per day)
+            hist.append(round(eq, 2))
+            del hist[:-61]
         if r.get("week") != week:
             r.update(week=week, week_start_equity=eq)
         r["peak"] = max(r.get("peak", eq), eq)
@@ -251,12 +292,21 @@ class RiskEngine:
         r, eq = self.state.risk, self.c.account().equity
         return 100 * (r["peak"] - eq) / r["peak"]
 
-    def approve(self, dec, price, positions):
+    def exposure_scale(self, atr_ratio=None):
+        """(multiplier, parts) from the live drawdown, market volatility and account volatility."""
+        try:
+            dd = self.drawdown_pct()
+        except Exception:
+            dd = None
+        return exposure_scale(self.cfg.risk, dd, atr_ratio, self.state.risk.get("day_equities"))
+
+    def approve(self, dec, price, positions, atr_ratio=None):
         """Size the trade and verify it fits every limit INCLUDING its own risk and margin."""
         acc, d = self.c.account(), dec.direction
         eq = acc.equity
         mult = self.core.risk_multiplier(self.state.risk.get("loss_streak", 0))
-        risk_pct = dec.risk_pct * mult
+        scale, scale_parts = self.exposure_scale(atr_ratio)
+        risk_pct = dec.risk_pct * mult * scale
         # Account-aware risk ceiling. This makes micro/small accounts usable without
         # ever allowing a percentage above the configured 1-2% discipline.
         try:
@@ -277,6 +327,7 @@ class RiskEngine:
         info = self.c.symbol_info()
         lots = self.core.lots_for(eq * risk_pct / 100, lpl, info.volume_step, info.volume_min, info.volume_max)
         det = {"risk_pct_requested": risk_pct, "loss_per_lot": lpl, "streak_mult": mult,
+               "exposure_scale": scale, **{f"scale_{k}": v for k, v in scale_parts.items()},
                "account_risk_cap_pct": account_cap if 'account_cap' in locals() else None,
                "account_equity": float(eq)}
         if lots <= 0:

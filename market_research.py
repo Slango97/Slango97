@@ -88,12 +88,15 @@ def _naive(col):
 
 
 def acceptance_metrics(trades, risk_pct, periods_per_year=252):
-    """Account-level OOS statistics from R-multiples at a fixed risk per trade (currency-agnostic)."""
+    """Account-level OOS statistics from R-multiples (currency-agnostic): each trade compounds at the equity fraction
+    it actually risked (`risk_frac`, after exposure scaling) or, for older trade files, at a fixed `risk_pct`."""
     if trades is None or len(trades) == 0:
         return {"n": 0}
     tr = trades.dropna(subset=["r"]).sort_values("close_time")
     r = tr["r"].astype(float).values
     f = risk_pct / 100.0
+    if "risk_frac" in tr and tr["risk_frac"].notna().all():
+        f = tr["risk_frac"].astype(float).values          # the sizing actually used (incl. exposure scaling)
     growth = np.maximum(1e-9, 1.0 + f * r)
     eq = np.cumprod(growth)
     peak = np.maximum.accumulate(np.r_[1.0, eq])[1:]
@@ -187,11 +190,19 @@ def research_market(market, sim, step, spec, cfg, *, folds=5, workers=0, cache_d
     parts = [p for p in parts if len(p)]
     stress = r_summary(pd.concat(parts, ignore_index=True)) if parts else {"n": 0}
     mc = monte_carlo(oos_base["r"].dropna().values if len(oos_base) else [], n_sims=L.mc_sims, block_len=L.mc_block_len)
+    # V5.7: what exposure scaling changed on the same OOS windows (risk taken vs drawdown avoided).
+    off = replace(cfg, risk=replace(cfg.risk, dd_scaling=False, vol_scaling=False))
+    parts_off = [opt.window(off, lo, hi) for lo, hi in opt.folds(folds)[1:]]
+    parts_off = [p for p in parts_off if len(p)]
+    m_off = acceptance_metrics(pd.concat(parts_off, ignore_index=True) if parts_off else pd.DataFrame(),
+                               cfg.risk.risk_per_trade_pct, ppy)
+    scaling = {"with_scaling": {k: m.get(k) for k in ("n", "return_pct", "max_dd_pct", "sharpe", "calmar")},
+               "without_scaling": {k: m_off.get(k) for k in ("n", "return_pct", "max_dd_pct", "sharpe", "calmar")}}
     status, reasons = verdict(m, stress, mc, cfg)
     if spec.source != "broker_export":
         reasons = reasons + ["costs are DEFAULT estimates, not this broker's (export with export_history.py --markets)"]
     return {"market": market, "status": status, "reasons": reasons, "metrics": m, "stress": stress,
-            "monte_carlo": mc, "walk_forward": {"verdict": wf["verdict"], "param_stability": wf["param_stability"],
+            "monte_carlo": mc, "exposure_scaling": scaling, "walk_forward": {"verdict": wf["verdict"], "param_stability": wf["param_stability"],
                                                 "oos_optimized": wf["oos_optimized"],
                                                 "folds": [{k: f[k] for k in ("fold", "train", "test", "oos_defaults")}
                                                           for f in wf["folds"]]},
@@ -219,6 +230,13 @@ def markdown(summary):
                      f"{'' if m.get('win_rate') is None else round(100 * m['win_rate'], 1)} | {m.get('exp_r', '')} | "
                      f"{m.get('pf', '')} | {m.get('sharpe', '')} | {m.get('max_dd_pct', '')} | {s.get('pf', '')} | "
                      f"{mc.get('p_negative', '')} | {row.get('period', '')} |")
+    lines += ["", "Exposure scaling (V5.7) on the same OOS trades — max DD % / return % with vs without:", ""]
+    for mk, row in summary["markets"].items():
+        sc = row.get("exposure_scaling")
+        if sc:
+            w, wo = sc["with_scaling"], sc["without_scaling"]
+            lines.append(f"- {mk}: DD {w.get('max_dd_pct')}% vs {wo.get('max_dd_pct')}% | return {w.get('return_pct')}% "
+                         f"vs {wo.get('return_pct')}% | Sharpe {w.get('sharpe')} vs {wo.get('sharpe')}")
     lines.append("")
     for mk, row in summary["markets"].items():
         if row.get("reasons"):

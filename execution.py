@@ -69,7 +69,7 @@ class ExecutionEngine:
         if abs(dec.tp - price) / dist < S.min_rr * 0.9:
             return Outcome(False, "reward/risk fell below minimum at current price")
 
-        appr = self.risk.approve(dec, price, positions)
+        appr = self.risk.approve(dec, price, positions, atr_ratio=ms.views[S.tf].get("atr_ratio"))
         auth = {"ok": appr.ok, "reason": appr.reason, "lots": appr.lots, "risk_pct": round(appr.risk_pct, 4),
                 "tier": dec.risk_tier, **{k: v for k, v in appr.details.items() if not isinstance(v, dict)}}
         if not appr.ok:

@@ -1,4 +1,12 @@
-# Slango Pro Trader — V5.6 (Expert AI Agent Pro Trader)
+# Slango Pro Trader — V5.7 (Expert AI Agent Pro Trader)
+
+## V5.7 drawdown- and volatility-aware exposure scaling (see V5_7_CHANGELOG.md, EXPOSURE_SCALING_AR.md)
+
+Per-trade risk now shrinks automatically - and only ever shrinks - when the account is more than 2% below its
+equity peak (linear to x0.35 at 6%), when market ATR exceeds 1.3x its recent average, or when the account's own
+daily volatility exceeds a 12%/yr target. Live trading and the backtester share one function, the market research
+judges the sizing actually used and reports with-vs-without scaling, and Telegram reports only band changes.
+Suite: 276 passed.
 
 ## V5.6 per-market walk-forward evidence (see V5_6_CHANGELOG.md, MARKET_RESEARCH_AR.md)
 

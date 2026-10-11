@@ -801,6 +801,14 @@ class AgentEngine:
                     news_age_h=(round(max(0.0, (time.time() - getattr(self.news, "heads_at", 0)) / 3600), 3)
                                 if getattr(self.news, "heads_at", 0) else None),
                     waits=dict(self.wait_counts.most_common(6)))
+        try:
+            ref = self.views.get("M15") or self.views.get("H1") or {}
+            scale, parts = self.risk.exposure_scale(ref.get("atr_ratio"))
+            snap.update(exposure_scale=scale, exposure_parts=parts)
+            if self.v5_brain is not None:
+                self.v5_brain.reporter.exposure_report(scale, parts)
+        except Exception as ex:
+            log.debug("exposure scale unavailable: %s", ex)
         if self.v5_brain is not None and self.lifecycle == Lifecycle.RUNNING:
             try:
                 self.v5_brain.scan_universe_if_due(primary_views=self.views)

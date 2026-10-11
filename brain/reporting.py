@@ -312,6 +312,20 @@ class V5Reporter:
         lines.append("Analysis only — orders remain controlled by the deterministic execution kernel.")
         self.tg.text("\n".join(lines))
 
+    # ---- exposure scaling ----------------------------------------------------------
+    def exposure_report(self, scale, parts):
+        """V5.7: one message when the risk multiplier moves to another 10% band (never on every heartbeat)."""
+        band = round(float(scale) * 10) / 10
+        prev = self.nm.peek_state("exposure_scale")
+        if not self.nm.state_changed("exposure_scale", band) or (prev is None and band >= 1.0):
+            return
+        names = {"drawdown": "drawdown", "market_vol": "market volatility", "account_vol": "account volatility"}
+        why = ", ".join(f"{names[k]} x{v:.2f}" for k, v in parts.items() if k in names) or "all conditions normal"
+        extra = f" | account vol {parts['account_vol_pct']}%/yr" if "account_vol_pct" in parts else ""
+        icon, title = ("🟢", "RISK BACK TO FULL SIZE") if band >= 1.0 else ("🟠", "RISK SCALED DOWN")
+        self.tg.text(self._head(icon, title) + f"\nPer-trade risk x{scale:.2f} ({why}){extra}\n"
+                     "Scaling only reduces risk; it recovers automatically as equity and volatility normalise.")
+
     # ---- trade lifecycle --------------------------------------------------------
     def trade_entry_feedback(self, trade_record, dec=None, frames=None):
         ticket = trade_record.get("ticket") or f"{trade_record.get('symbol')}:{trade_record.get('setup')}:{trade_record.get('entry')}"
