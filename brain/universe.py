@@ -1,0 +1,276 @@
+"""Market-universe radar for V5.
+
+The universe layer is intentionally analysis-only. It resolves broker-specific symbol
+names and builds market-health snapshots for the configured watchlist. It does not
+create orders or bypass the primary deterministic execution kernel.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+try:
+    from analysis import analyze_tf
+except Exception:  # pragma: no cover - imports are validated by the application/tests
+    analyze_tf = None
+
+from .technical import TechnicalBrain
+from regime import classify as classify_regime
+from instruments import profile_for
+
+
+ALIASES = {
+    "XAUUSD": ("XAUUSD", "GOLD", "GOLDM", "XAUUSDm", "XAUUSDs", "XAUUSD.a", "XAUUSD."),
+    "EURUSD": ("EURUSD", "EURUSDm", "EURUSDs", "EURUSD.a"),
+    "GBPUSD": ("GBPUSD", "GBPUSDm", "GBPUSDs", "GBPUSD.a"),
+    "USDJPY": ("USDJPY", "USDJPYm", "USDJPYs", "USDJPY.a"),
+    "XAGUSD": ("XAGUSD", "SILVER", "XAGUSDm", "XAGUSDs"),
+    "US30": ("US30", "US30Cash", "DJI", "DJ30", "WallSt30", "US30m", "US30s"),
+    "NAS100": ("NAS100", "NAS100Cash", "USTEC", "US100", "NAS100m", "NAS100s"),
+    "USOIL": ("USOIL", "USOIL.cash", "WTI", "XTIUSD", "OIL", "USOILm", "USOILs"),
+    "BTCUSD": ("BTCUSD", "BTCUSDm", "BTCUSDs", "BTCUSD.a", "Bitcoin", "BITCOIN"),
+}
+
+
+@dataclass
+class MarketHealth:
+    requested: str
+    symbol: str | None
+    status: str
+    health: float
+    confidence: float
+    bias: int
+    tick_age_s: float | None = None
+    technical_score: float = 0.0
+    reasons: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    patterns: list[str] = field(default_factory=list)
+    timeframe_trends: dict[str, str] = field(default_factory=dict)
+    regime: str = ""
+    confluence_score: float = 0.0
+    affordability_score: float = 0.0
+    affordable: bool = False
+    min_lot_risk_pct: float | None = None
+    estimated_stop_distance: float | None = None
+    session_score: float = 0.0
+    ranking_score: float = 0.0
+    selection_reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class MarketUniverseBrain:
+    name = "market_universe"
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.technical = TechnicalBrain()
+
+    @staticmethod
+    def _requested_aliases(requested: str):
+        key = str(requested or "").upper().strip()
+        return ALIASES.get(key, (key,))
+
+    def resolve(self, client, requested: str) -> str | None:
+        if hasattr(client, "resolve_market_symbol"):
+            try:
+                return client.resolve_market_symbol(requested, self._requested_aliases(requested))
+            except TypeError:
+                try:
+                    return client.resolve_market_symbol(requested)
+                except Exception:
+                    pass
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _account_risk_cap(cfg, equity: float) -> float:
+        if equity <= float(getattr(cfg.risk, "micro_account_max_equity", 25.0)):
+            return float(getattr(cfg.risk, "micro_account_risk_pct", 1.0))
+        if equity <= float(getattr(cfg.risk, "small_account_max_equity", 500.0)):
+            return float(getattr(cfg.risk, "small_account_risk_pct", 0.75))
+        return float(getattr(cfg.risk, "risk_per_trade_pct", 0.5))
+
+    @staticmethod
+    def _session_score(profile, hour_utc: int) -> float:
+        # Blueprint: London/NY overlap is the peak liquidity window; session preference is
+        # a ranking factor, never a trade permission by itself.
+        if 13 <= hour_utc < 17:
+            return 100.0
+        if 8 <= hour_utc < 13 or 17 <= hour_utc < 20:
+            return 88.0
+        if 0 <= hour_utc < 9:
+            return 82.0 if profile.asset_class == "fx" and (profile.base == "JPY" or profile.quote == "JPY") else 72.0
+        if profile.asset_class in ("crypto",):
+            return 78.0
+        return 60.0
+
+    def _affordability(self, client, symbol, entry, direction, atr, equity, cfg):
+        """Broker-aware affordability. Never treats a broker minimum lot as affordable if it exceeds the account risk cap."""
+        try:
+            info = client.symbol_info_for(symbol) if hasattr(client, "symbol_info_for") else None
+            if info is None or equity <= 0 or entry <= 0 or atr <= 0:
+                return 0.0, False, None, None, "broker/account metadata unavailable"
+            point = float(getattr(info, "point", 0.0) or 0.0)
+            min_lot = float(getattr(info, "volume_min", 0.0) or 0.0)
+            if point <= 0 or min_lot <= 0:
+                return 0.0, False, None, None, "invalid broker point/minimum lot"
+            # Conservative pre-flight stop proxy: 1.2 ATR. The final trade still uses the
+            # structural stop generated by decision.py and is re-sized by RiskEngine.
+            stop_dist = max(1.2 * float(atr), float(getattr(info, "trade_stops_level", 0) or 0) * point)
+            sl = entry - stop_dist if direction >= 0 else entry + stop_dist
+            lpl = float(client.calc_loss_per_lot_for(symbol, direction, entry, sl)) if hasattr(client, "calc_loss_per_lot_for") else 0.0
+            if lpl <= 0:
+                return 0.0, False, None, stop_dist, "broker loss-per-lot calculation unavailable"
+            min_risk_pct = 100.0 * min_lot * lpl / equity
+            cap = self._account_risk_cap(cfg, equity)
+            affordable = min_risk_pct <= cap + 1e-9
+            # 100 = minimum lot consumes <= 35% of risk budget; 0 = consumes > 100%.
+            ratio = min_risk_pct / max(cap, 1e-9)
+            score = max(0.0, min(100.0, 100.0 * (1.0 - max(0.0, ratio - 0.35) / 0.65)))
+            reason = f"min lot risk {min_risk_pct:.3f}% vs cap {cap:.3f}%"
+            return score, affordable, min_risk_pct, stop_dist, reason
+        except Exception as ex:
+            return 0.0, False, None, None, f"affordability check failed: {ex}"
+
+    @staticmethod
+    def _confluence(row: MarketHealth) -> float:
+        # Evidence domains mirror the supplied strategy: HTF structure, zones/liquidity,
+        # trigger/pattern evidence and directional agreement. This is ranking, not execution permission.
+        trends = row.timeframe_trends
+        non_neutral = [x for x in trends.values() if x in ("BULLISH", "BEARISH")]
+        alignment = 0.0
+        if row.bias:
+            alignment = 100.0 * sum(1 for x in non_neutral if (x == "BULLISH" if row.bias > 0 else x == "BEARISH")) / max(1, len(non_neutral))
+        zones = min(100.0, 30.0 + 12.0 * max(0, len(row.reasons)))
+        patterns = min(100.0, 35.0 + 15.0 * len(row.patterns))
+        return round(0.45 * alignment + 0.35 * zones + 0.20 * patterns, 1)
+
+    def rank(self, client, rows: list[MarketHealth], *, cfg=None) -> list[MarketHealth]:
+        """Rank markets by evidence + account affordability before expensive full decision analysis.
+
+        This is deliberately a funnel: Universe -> affordability -> regime/confluence -> full
+        decision/news/intermarket/critic/risk on the selected market. It never places an order.
+        """
+        cfg = cfg or self.cfg
+        try:
+            equity = float(getattr(client.account(), "equity", 0.0) or 0.0)
+        except Exception:
+            equity = 0.0
+        now = client.utc_now() if hasattr(client, "utc_now") else None
+        hour = int(getattr(now, "hour", 13))
+        ranked = []
+        for r in rows:
+            if r.status != "OK" or not r.symbol or r.bias == 0:
+                r.ranking_score = 0.0
+                r.affordable = False
+                ranked.append(r)
+                continue
+            try:
+                frames = {}
+                for tf in ("H1", "M15"):
+                    if hasattr(client, "rates_for"):
+                        df, _ = client.rates_for(r.symbol, tf, max(80, int(getattr(cfg.brain, "universe_bars", 180))))
+                        frames[tf] = df
+                atr = float((frames.get("M15") is not None and self._atr_from_frame(frames["M15"])) or 0.0)
+                if not atr:
+                    atr = float((frames.get("H1") is not None and self._atr_from_frame(frames["H1"])) or 0.0)
+                tick = client.tick_for(r.symbol) if hasattr(client, "tick_for") else None
+                entry = float(getattr(tick, "ask" if r.bias > 0 else "bid", 0.0) or 0.0)
+                profile = profile_for(r.symbol, client.symbol_info_for(r.symbol) if hasattr(client, "symbol_info_for") else None)
+                aff, ok, minrisk, stop, aff_reason = self._affordability(client, r.symbol, entry, r.bias, atr, equity, cfg)
+                r.affordability_score, r.affordable = round(aff, 1), bool(ok)
+                r.min_lot_risk_pct, r.estimated_stop_distance = minrisk, stop
+                r.confluence_score = self._confluence(r)
+                # Reconstruct a lightweight regime from the same validated views used by the scanner.
+                views = {}
+                for tf in ("M15", "H1", "H4", "D1"):
+                    if tf in frames:
+                        views[tf] = analyze_tf(frames[tf], tf, cfg.sessions.bounds, cfg.strategy.adx_bands, phases=cfg.sessions.phases)
+                    elif hasattr(client, "rates_for"):
+                        df, _ = client.rates_for(r.symbol, tf, max(80, int(getattr(cfg.brain, "universe_bars", 180))))
+                        views[tf] = analyze_tf(df, tf, cfg.sessions.bounds, cfg.strategy.adx_bands, phases=cfg.sessions.phases)
+                reg = classify_regime(views, cfg, None, None)
+                r.regime = reg.label
+                regime_score = 0.0 if reg.no_trade else 100.0 if reg.label in ("STRONG_TREND", "BREAKOUT", "REVERSAL") else 80.0 if reg.label in ("WEAK_TREND", "EXPANSION") else 65.0
+                r.session_score = self._session_score(profile, hour)
+                # Unaffordable markets are never selectable, regardless of technical attractiveness.
+                raw = 0.35 * r.health + 0.20 * r.confluence_score + 0.20 * r.affordability_score + 0.15 * regime_score + 0.10 * r.session_score
+                r.ranking_score = round(raw if ok else min(raw, 34.9), 1)
+                reasons = [f"health {r.health:.0f}", f"confluence {r.confluence_score:.0f}", f"regime {reg.label}", aff_reason,
+                           f"session suitability {r.session_score:.0f}"]
+                if not ok:
+                    reasons.insert(0, "ACCOUNT-INELIGIBLE: broker minimum lot exceeds risk budget")
+                r.selection_reasons = reasons
+            except Exception as ex:
+                r.ranking_score = 0.0
+                r.affordable = False
+                r.selection_reasons = [f"selection preflight failed: {ex}"]
+            ranked.append(r)
+        return sorted(ranked, key=lambda x: x.ranking_score, reverse=True)
+
+    @staticmethod
+    def _atr_from_frame(df):
+        if df is None or len(df) < 15:
+            return 0.0
+        high = df["high"].astype(float)
+        low = df["low"].astype(float)
+        close = df["close"].astype(float)
+        prev = close.shift(1)
+        tr = (high - low).combine((high - prev).abs(), max).combine((low - prev).abs(), max)
+        return float(tr.tail(14).mean())
+
+    def scan(self, client, *, primary_symbol: str = "", primary_views: dict | None = None) -> list[MarketHealth]:
+        if analyze_tf is None:
+            return []
+        watchlist = tuple(getattr(self.cfg.brain, "watchlist", ()) or ())
+        max_symbols = max(1, int(getattr(self.cfg.brain, "universe_max_symbols", len(watchlist) or 1)))
+        bars = max(80, int(getattr(self.cfg.brain, "universe_bars", 180)))
+        out: list[MarketHealth] = []
+        for requested in watchlist[:max_symbols]:
+            try:
+                symbol = self.resolve(client, requested)
+                if not symbol:
+                    out.append(MarketHealth(str(requested), None, "UNAVAILABLE", 0.0, 0.0, 0,
+                                            warnings=["symbol not available in connected MT5 terminal"]))
+                    continue
+                tick_age = float(client.tick_age_for(symbol)) if hasattr(client, "tick_age_for") else None
+                views = {}
+                frames = {}
+                if symbol == primary_symbol and primary_views:
+                    views = dict(primary_views)
+                for tf in ("M15", "H1", "H4", "D1"):
+                    try:
+                        if hasattr(client, "rates_for"):
+                            df, _ = client.rates_for(symbol, tf, bars)
+                        else:
+                            break
+                        frames[tf] = df
+                        views[tf] = analyze_tf(df, tf, self.cfg.sessions.bounds, self.cfg.strategy.adx_bands,
+                                               phases=self.cfg.sessions.phases)
+                    except Exception:
+                        continue
+                if not views:
+                    out.append(MarketHealth(str(requested), symbol, "NO_DATA", 20.0, 0.0, 0,
+                                            tick_age_s=tick_age, warnings=["no usable analysis data"]))
+                    continue
+                tech = self.technical.run(views, frames=frames, symbol=symbol)
+                fresh_score = 100.0 if tick_age is None or tick_age <= self.cfg.execution.max_tick_age_s else 20.0
+                data_score = 100.0 * min(1.0, len(views) / 4.0)
+                health = 0.70 * tech.score + 0.20 * data_score + 0.10 * fresh_score
+                confidence = min(1.0, max(0.0, (tech.confidence * 0.8) + (0.2 if data_score >= 75 else 0.0)))
+                warnings = list(tech.warnings)
+                if tick_age is not None and tick_age > self.cfg.execution.max_tick_age_s:
+                    warnings.append(f"stale tick age {tick_age:.1f}s")
+                trends = {tf: row.get("trend", "") for tf, row in tech.facts.get("timeframes", {}).items()}
+                out.append(MarketHealth(str(requested), symbol, "OK", round(min(100.0, health), 1),
+                                        round(confidence, 3), tech.bias, tick_age_s=None if tick_age is None else round(tick_age, 2),
+                                        technical_score=round(tech.score, 1), reasons=list(tech.reasons)[:5],
+                                        warnings=warnings[:5], patterns=list(tech.facts.get("candlestick_patterns", []))[:4] +
+                                        list(tech.facts.get("chart_pattern_hints", []))[:4], timeframe_trends=trends))
+            except Exception as ex:
+                out.append(MarketHealth(str(requested), None, "ERROR", 0.0, 0.0, 0,
+                                        warnings=[f"universe scan error: {ex}"]))
+        return out

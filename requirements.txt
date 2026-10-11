@@ -1,0 +1,14 @@
+# Compatibility baseline for the Windows/Python 3.11 MT5 environment used by this project.
+# MetaTrader5/Anthropic/OpenAI are kept compatible-range because wheels/API providers vary by platform.
+# After validating the live workstation, generate requirements.lock with:
+#     python -m pip freeze > requirements.lock
+# Then use requirements.lock for reproducible deployments.
+pandas==3.0.2
+numpy==1.26.4
+requests==2.33.1
+MetaTrader5==5.0.6231
+anthropic>=0.40,<1
+openai>=1.40,<3      # optional: only for INTEL__PROVIDER=openai (untested here)
+psutil>=5.9        # optional: CPU/memory in heartbeats
+
+matplotlib>=3.8,<4
