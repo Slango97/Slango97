@@ -1,4 +1,10 @@
-# Slango Pro Trader — V5.5 (Expert AI Agent Pro Trader)
+# Slango Pro Trader — V5.6 (Expert AI Agent Pro Trader)
+
+## V5.6 per-market walk-forward evidence (see V5_6_CHANGELOG.md, MARKET_RESEARCH_AR.md)
+
+`RESEARCH_MARKETS_WINDOWS.bat` exports your broker's history for all 12 watchlist markets and runs walk-forward,
+cost-stress and Monte Carlo tests per market against PF >= 1.3, Sharpe >= 0.8, max DD < 15%. With
+`BRAIN__REQUIRE_MARKET_EVIDENCE=true` only markets with a fresh PASS can be selected or traded. Suite: 268 passed.
 
 ## V5.5 audit & intelligence upgrade (see V5_5_CHANGELOG.md, VALIDATION_REPORT_V5_5.md, SYSTEM_AUDIT_V5_5_AR.md)
 

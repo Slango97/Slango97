@@ -277,7 +277,7 @@ class V5Reporter:
         rows = list(rows or [])
         if not rows:
             return
-        best = next((r for r in rows if r.affordable and r.status == "OK"), None)
+        best = next((r for r in rows if r.affordable and r.status == "OK" and getattr(r, "evidence", "") in ("", "PASS")), None)
         if not self.nm.state_changed("selector", best.symbol if best else None):
             return                                       # internal re-ranking continues silently
         lines = [self._head("🧭", "ADAPTIVE MARKET SELECTOR")]
@@ -285,7 +285,8 @@ class V5Reporter:
             bias = "BUY" if r.bias > 0 else "SELL" if r.bias < 0 else "NEUTRAL"
             aff = "affordable" if r.affordable else "INELIGIBLE"
             mlr = f"{r.min_lot_risk_pct}%" if r.min_lot_risk_pct is not None else "?"
-            lines.append(f"{i}. {r.symbol or r.requested} | rank {r.ranking_score:.0f} | {aff} | {bias} | {r.regime or '?'} | min-lot risk {mlr}")
+            ev = f" | evidence {r.evidence}" if getattr(r, "evidence", "") else ""
+            lines.append(f"{i}. {r.symbol or r.requested} | rank {r.ranking_score:.0f} | {aff} | {bias} | {r.regime or '?'} | min-lot risk {mlr}{ev}")
         if best:
             lines.append(f"Selected: {best.symbol} ({best.ranking_score:.0f}/100) — full news/intermarket/critic/chief/risk gates follow.")
         else:

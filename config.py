@@ -528,6 +528,12 @@ class LearningConfig:
     drift_z: float = 2.0
     drift_psi: float = 0.25
     drift_min_trades: int = 30
+    # V5.6 per-market walk-forward acceptance (Strategies Summary: PF > 1.3, Sharpe > 0.8, max DD < 15%)
+    market_min_pf: float = 1.3
+    market_min_sharpe: float = 0.8
+    market_max_dd_pct: float = 15.0
+    market_stress_min_pf: float = 1.0      # still profitable with spread x stress_spread_mult, slippage x stress_slippage_mult
+    market_evidence_max_age_days: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -573,6 +579,10 @@ class BrainConfig:
     adaptive_selection_min_score: float = 65.0
     adaptive_selection_flat_only: bool = True
     adaptive_selection_allow_fixed_symbol: bool = False
+    # V5.6: only markets that PASSED the per-market walk-forward (market_research.py --publish) may be traded.
+    # Off by default so an install without research data keeps working; turn on after running the research.
+    require_market_evidence: bool = False
+    market_evidence_file: str = "data/market_evidence.json"
 
 
 @dataclass(frozen=True)

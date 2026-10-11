@@ -67,6 +67,10 @@ class BTConfig:
     price_basis: str = "bid"              # MT5 builds CFD/forex bars from BID prices (official MT5 help); "mid" if yours are mid
     bars: int = 500
     min_tf_bars: int = 60
+    # V5.6 multi-market research: instrument-specific spread cap (points) mirroring the live dynamic cap for
+    # index/energy/crypto, and the weekend rule of the instrument profile. None/False = V5.5 gold behaviour.
+    spread_cap_points: float = None
+    trades_weekends: bool = False
 
 
 @dataclass
@@ -304,7 +308,7 @@ class Backtester:
                 continue
             lo = max(0, i - 90)
             micro = score_market(cfg.micro, SP[i], float(np.median(SP[max(0, i - 60):i + 1])), O[lo:i + 1], H[lo:i + 1],
-                                 L[lo:i + 1], C[lo:i + 1], TV[lo:i + 1], cfg.execution.max_spread_points * bt.point)
+                                 L[lo:i + 1], C[lo:i + 1], TV[lo:i + 1], (bt.spread_cap_points or cfg.execution.max_spread_points) * bt.point)
             es = eng.state(tn, lambda: (micro.range_ratio, micro.spread_ratio))
             news = NewsContext(status="NO_DATA", blackout=es.blackout, blackout_reason=es.reason, event_phase=es.phase,
                                event_bias=es.surprise_bias, impact="high" if es.blackout else "low")
@@ -329,6 +333,7 @@ class Backtester:
         cfg = cfg or self.cfg
         bt, st, ex = self.bt, cfg.strategy, cfg.execution
         core = RiskCore(cfg)
+        core.spread_cap_points, core.trades_weekends = bt.spread_cap_points, bt.trades_weekends
         O, H, L, C, idx = prep.O, prep.H, prep.L, prep.C, prep.idx
         SP = self.spreads(prep)
         from risk import calendar_risk_multiplier, configured_calendar_families

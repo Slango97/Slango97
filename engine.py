@@ -586,6 +586,10 @@ class AgentEngine:
             n = self.news_ctx
             if n is not None and not getattr(n, "calendar_ok", False):
                 return False, "economic calendar unavailable/stale: entries fail closed"
+        from market_evidence import gate as evidence_gate
+        ok_ev, why_ev = evidence_gate(self.cfg, self.client.symbol)
+        if not ok_ev:
+            return False, "market evidence: " + why_ev
         if self.armed is not None:
             return True, "ok"
         missing = [tf for tf in ("M5", "M15", "H1") if tf not in self.views]
