@@ -1,5 +1,7 @@
 # Slango Pro Trader — V5.10 (Expert AI Agent Pro Trader)
 
+**دليل التشغيل على ويندوز بالعربية: [WINDOWS_SETUP_GUIDE_AR.md](WINDOWS_SETUP_GUIDE_AR.md)** · Windows setup guide (Arabic).
+
 ## V5.10 enforced deployment ladder (see V5_10_CHANGELOG.md, ROLLOUT_AR.md)
 
 DRY_RUN -> DEMO -> LIVE_PILOT -> LIVE_FULL is now enforced by `rollout.py`, judged from the system's own journals:
