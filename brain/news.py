@@ -29,6 +29,8 @@ class NewsMacroBrain:
             "headlines": list(getattr(ctx, "headlines", []) or [])[:8],
             "blackout_reason": getattr(ctx, "blackout_reason", ""),
             "calendar_required": bool(getattr(ctx, "calendar_required", False)),
+            "events": list(getattr(ctx, "events", []) or []),
+            "instrument": getattr(ctx, "instrument", "") or symbol,
         }
         reasons = []
         warnings = []

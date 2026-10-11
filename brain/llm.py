@@ -16,11 +16,26 @@ log = logging.getLogger("v5.llm")
 class DirectLLMGateway:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.enabled = bool(getattr(cfg.brain, "llm_enabled", False)) and str(getattr(cfg.intel, "provider", "none")).lower() == "openai"
+        self.provider = str(getattr(cfg.intel, "provider", "none")).lower()
+        self.enabled = bool(getattr(cfg.brain, "llm_enabled", False)) and self.provider in ("openai", "anthropic")
         self.model = str(getattr(cfg.intel, "openai_model", "") or "")
         self.timeout_s = float(getattr(cfg.brain, "llm_timeout_s", 8.0))
         self.max_tokens = int(getattr(cfg.brain, "llm_max_tokens", 900))
         self.client = None
+        if self.enabled and self.provider == "anthropic":
+            self.model = str(getattr(cfg.intel, "anthropic_model", "") or "")
+            if not os.getenv("ANTHROPIC_API_KEY") or not self.model:
+                self.enabled = False
+                log.warning("V5 direct LLM disabled: ANTHROPIC_API_KEY or INTEL__ANTHROPIC_MODEL missing")
+                return
+            try:
+                import anthropic
+                # No SDK retries: the advisory pass sits on the decision path and must stay time-bounded.
+                self.client = anthropic.Anthropic(timeout=self.timeout_s, max_retries=0)
+            except Exception as ex:
+                self.enabled = False
+                log.warning("V5 direct LLM unavailable: %s", ex)
+            return
         if self.enabled:
             key = os.getenv("OPENAI_API_KEY", "")
             if not key or not self.model:
@@ -37,8 +52,13 @@ class DirectLLMGateway:
     def reason(self, payload: dict) -> dict | None:
         if not self.enabled or self.client is None:
             return None
+        instrument = str(payload.get("instrument") or (payload.get("deterministic") or {}).get("symbol") or "the active market")
         prompt = (
             "You are the advisory Chief Trader reasoning layer for a deterministic MT5 trading system. "
+            f"The instrument being evaluated is {instrument}"
+            + (f" ({payload['instrument_drivers']})" if payload.get("instrument_drivers") else "")
+            + ". Reason only about this instrument and its own drivers; do not discuss other markets unless they "
+            "are listed drivers of it. "
             "Do not invent market facts. Do not alter risk beyond reducing it. Do not issue broker orders. "
             "Return JSON only with keys: action, permission, confidence, risk_multiplier, reasons, contradictions. "
             "The deterministic kernel remains authoritative.\n\n"
@@ -47,7 +67,13 @@ class DirectLLMGateway:
         try:
             # Prefer the modern Responses API; keep a Chat Completions fallback for compatible SDK versions.
             raw = ""
-            if hasattr(self.client, "responses"):
+            if self.provider == "anthropic":
+                resp = self.client.messages.create(model=self.model, max_tokens=self.max_tokens,
+                                                   messages=[{"role": "user", "content": prompt}])
+                if getattr(resp, "stop_reason", None) == "refusal":
+                    return None
+                raw = "\n".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+            elif hasattr(self.client, "responses"):
                 resp = self.client.responses.create(model=self.model, input=prompt, max_output_tokens=self.max_tokens)
                 raw = getattr(resp, "output_text", "") or ""
             elif hasattr(self.client, "chat") and hasattr(self.client.chat, "completions"):

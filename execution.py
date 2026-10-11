@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass
 
+from pricefmt import fmt_price, round_price
 from reconciliation import make_comment
 
 log = logging.getLogger("exec")
@@ -84,7 +85,7 @@ class ExecutionEngine:
                                entry=price, sl=dec.sl, tp=dec.tp, score=dec.score, **appr.details)
             self.risk.note_trade()
             return Outcome(True, "dry run: order not sent", appr.lots, dry_run=True,
-                           details={"risk_authorization": auth, "execution": {"fill": round(price, 2), "dry_run": True}})
+                           details={"risk_authorization": auth, "execution": {"fill": round_price(price, dist), "dry_run": True}})
 
         comment = make_comment(S.code, dec.score, dist)
         if self.cfg.features.limit_entries:
@@ -118,10 +119,11 @@ class ExecutionEngine:
         self.mgr.register(pos, dec, res, appr, ms, news, spread_at_send)
         self.risk.note_trade()
         prob = f", P(win) {dec.p_win:.0%}, E[R] {dec.exp_r:+.2f}" if dec.p_win is not None else ""
-        self.alerts.send("INFO", f"Opened {dec.style} {dec.action} {pos.volume} @ {pos.price_open:.2f} SL {pos.sl:.2f} "
-                                 f"TP {pos.tp:.2f} | {dec.setup} in {dec.regime}, score {dec.score}{prob}", key=f"open{pos.ticket}")
+        if not self.cfg.features.telegram_explain:      # the record-based OPEN report already covers this
+            self.alerts.send("INFO", f"Opened {dec.style} {dec.action} {pos.volume} @ {fmt_price(pos.price_open, dist)} SL {fmt_price(pos.sl, dist)} "
+                                     f"TP {fmt_price(pos.tp, dist)} | {dec.setup} in {dec.regime}, score {dec.score}{prob}", key=f"open{pos.ticket}")
         return Outcome(True, "executed", pos.volume, ticket=pos.ticket,
-                       details={"risk_authorization": auth, "execution": {"fill": pos.price_open, "slippage": round(res.slippage, 3),
+                       details={"risk_authorization": auth, "execution": {"fill": pos.price_open, "sl": pos.sl, "tp": pos.tp, "slippage": round(res.slippage, 3),
                                                                           "latency_ms": round(res.latency_ms, 1), "ticket": pos.ticket}})
 
     # ---- V4.2 limit entries -------------------------------------------------

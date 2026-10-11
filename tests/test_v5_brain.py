@@ -47,7 +47,7 @@ def _decision(action="WAIT"):
 
 
 def test_v5_workflow_runs_without_llm_or_telegram(tmp_path):
-    cfg = replace(Config(), brain=replace(Config().brain, journal_file=str(tmp_path / "v5.jsonl"), health_report_interval_min=60))
+    cfg = replace(Config(), brain=replace(Config().brain, journal_file=str(tmp_path / "v5.jsonl")))
     system = V5BrainSystem(cfg, client=FakeClient(), risk_engine=None, alerts=None)
     ms = SimpleNamespace(views=_views(), micro=SimpleNamespace(score=90), regime=SimpleNamespace(label="STRONG_TREND"))
     news = SimpleNamespace(status="OK", bias=0.4, confidence=0.8, impact="low", event_phase="CLEAR", blackout=False,

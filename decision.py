@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from config import LADDER
 from confluence import assess
 import levels as levels_mod
+from pricefmt import round_price
 import mtf
 from setups import classify
 
@@ -270,9 +271,9 @@ def tp1_level(c, cfg):
         if b["r"] >= c.rr - 0.25:
             break
         if b["r"] >= st.tp1_min_r:
-            return round(b["price"] - c.direction * 0.05 * risk, 2)
+            return round_price(b["price"] - c.direction * 0.05 * risk, risk)
     if c.rr >= st.tp1_default_r + 0.5:
-        return round(c.entry + c.direction * st.tp1_default_r * risk, 2)
+        return round_price(c.entry + c.direction * st.tp1_default_r * risk, risk)
     return None
 
 

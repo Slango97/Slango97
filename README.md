@@ -1,3 +1,15 @@
+# Slango Pro Trader — V5.5 (Expert AI Agent Pro Trader)
+
+## V5.5 audit & intelligence upgrade (see V5_5_CHANGELOG.md, VALIDATION_REPORT_V5_5.md, SYSTEM_AUDIT_V5_5_AR.md)
+
+A full-system audit fixed defects that mattered once the adaptive selector started trading markets other than gold:
+2-decimal price rounding (EURUSD TP1 could trigger right after entry), a gold-only news-intelligence prompt applied
+to every market, HALTED/DEGRADED alert flapping, hard-coded "XAUUSD" message identity and duplicate trade
+messages. It also implements the Enhancement Specification: a Telegram notification state engine (no scan / no-trade
+spam, once-per-stage news and trade events), Asia/Beirut display time, stable news event IDs with announce/release
+reports and affected markets, instrument-aware LLM prompts (Anthropic or OpenAI), and three chart views whose
+execution levels are copied from the exact execution candidate. Full suite: 257 passed.
+
 # Expert AI Agent Pro Trader — V5.2 Ultimate Brain Architecture
 
 ## V5.2 (see V5_2_CHANGELOG.md)

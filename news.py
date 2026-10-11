@@ -22,7 +22,7 @@ from collections import deque
 
 from events import EventEngine, classify_event
 from redact import redact
-from intel import BIAS, SYSTEM, make_chain, parse
+from intel import BIAS, make_chain, parse, system_prompt
 from sources import assess, enforce
 
 log = logging.getLogger("news")
@@ -71,6 +71,7 @@ class NewsContext:
     rules_confidence: float = 0.0
     rules_families: dict = field(default_factory=dict)
     rules_conflicts: list = field(default_factory=list)
+    events: list = field(default_factory=list)   # V5.5: structured recent/upcoming events (id, local-time-ready)
 
 
 def _default_http(url, timeout, contact=""):
@@ -162,8 +163,13 @@ class NewsEngine:
 
     def set_instrument(self, profile):
         """Filter the calendar to the currencies that move this instrument and sign every bias for it."""
+        changed = getattr(self.profile, "symbol", None) != getattr(profile, "symbol", None)
         self.profile = profile
         self.ev.profile = profile
+        if changed and self.intel is not None:
+            # Intelligence is instrument-specific: a view (bias/veto) produced for the previous market must never
+            # be applied to the newly selected one. Force a fresh, instrument-aware assessment.
+            self.intel, self.intel_status, self.heads_hash = None, "UNKNOWN", None
         self._set_events(self._raw_events)
 
     def _set_events(self, events):
@@ -427,8 +433,10 @@ class NewsEngine:
         evs = [e for e in self.ev.events if now - timedelta(hours=3) <= e["time"] <= now + timedelta(hours=24)]
         ev_txt = "\n".join(f"{e['time']:%a %H:%M} UTC {e['title']} [{e['cls']}] forecast={e.get('forecast')} "
                            f"previous={e.get('previous')} actual={e.get('actual')} typical_move=${e['move']:.0f}" for e in evs)
+        sym = getattr(self.profile, "symbol", None) or "XAUUSD"
+        cur = "/".join(c for c in getattr(self.profile, "calendar_currencies", ("USD",)) if c != "All") or "USD"
         return (f"Current time: {now:%Y-%m-%d %H:%M} UTC\n\nHeadlines:\n" + ("\n".join(lines) or "none")
-                + "\n\nHigh-impact USD events (recent / next 24h):\n" + (ev_txt or "none"))
+                + f"\n\nInstrument: {sym} | high-impact {cur} events (recent / next 24h):\n" + (ev_txt or "none"))
 
     def refresh(self):
         """Network work (call from a background thread). Never raises."""
@@ -462,7 +470,7 @@ class NewsEngine:
             self.intel, self.intel_status, self.heads_hash = None, "NO_DATA", h
             return
         try:
-            data = parse(self._llm(SYSTEM, self._prompt(now)), self.ic)
+            data = parse(self._llm(system_prompt(self.profile), self._prompt(now)), self.ic)
             data, notes = enforce(data, self.heads, self.ic)
             data["fetched_at"] = time.time()
             data["expires_at"] = data["fetched_at"] + 60 * data["expiry_minutes"]
@@ -514,13 +522,21 @@ class NewsEngine:
         now_ = datetime.now(timezone.utc)
         ctx.medium_upcoming = [f"{e.get('currency', '')} {e['title']} {e['time']:%a %H:%M} UTC" for e in self.ev.upcoming_medium(now_, 12)][:6]
         ctx.instrument = self.profile.symbol if self.profile is not None else ""
+        try:
+            from events import event_record
+            cur = set(self.profile.calendar_currencies) if self.profile is not None else {"USD"}
+            window = [e for e in list(self._raw_events) if now_ - timedelta(hours=3) <= e["time"] <= now_ + timedelta(hours=24)]
+            ctx.events = [event_record(e, now_, self.cfg.events.classes, e.get("currency", "USD") in cur)
+                          for e in sorted(window, key=lambda e: e["time"])][:40]
+        except Exception as ex:                       # reporting data only: never break the trading context
+            log.debug("event records unavailable: %s", ex)
         b1 = c1 = 0.0
         intel = self.intel
         if intel and self.intel_status == "OK":
             life = intel["expires_at"] - intel["fetched_at"]
             age = time.time() - intel["fetched_at"]
             if age < life:
-                b1 = BIAS[intel["gold_bias"]]
+                b1 = BIAS[intel.get("instrument_bias", intel["gold_bias"])]
                 c1 = intel["confidence"] * (1 - 0.5 * age / life)
                 ctx.risk_level, ctx.trade_veto = intel["risk_level"], intel["trade_veto"]
                 ctx.drivers, ctx.contradictions = intel["key_drivers"], intel["contradictions"]

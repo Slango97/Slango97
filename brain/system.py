@@ -11,7 +11,7 @@ class V5BrainSystem:
         self.cfg = cfg
         self.client = client
         self.workflow = V5Workflow(cfg, client=client, risk_engine=risk_engine, alerts=alerts)
-        self.reporter = V5Reporter(cfg, alerts=alerts)
+        self.reporter = V5Reporter(cfg, alerts=alerts, market=lambda: getattr(client, "symbol", ""))
         self.universe = MarketUniverseBrain(cfg)
         self._universe_last = 0.0
         self.enabled = bool(getattr(cfg.brain, "enabled", True))
@@ -24,7 +24,8 @@ class V5BrainSystem:
         run = self.workflow.run(lifecycle=lifecycle, ms=ms, decision=decision, news_ctx=news_ctx,
                                 positions=positions, frames=frames, aux=aux,
                                 reconciliation_ok=reconciliation_ok, state_recovery_pending=state_recovery_pending)
-        self.reporter.publish(run, frames=frames, force_health=force_health)
+        self.reporter.publish(run, frames=frames, force_health=force_health, deterministic=decision,
+                              views=getattr(ms, "views", None))
         return run
 
     def select_market_if_due(self, *, primary_views=None, force=False, allow_switch=True):

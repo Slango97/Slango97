@@ -499,6 +499,11 @@ class NotifyConfig:
     daily_report: bool = True
     http_retries: int = 3
     http_retry_delay_s: float = 0.75
+    # V5.5 Telegram intelligence (Enhancement Specification)
+    display_timezone: str = "Asia/Beirut"  # every user-facing time; IANA zone, DST handled automatically
+    news_announce_lead_min: float = 120.0  # announce a relevant event once when it is this close
+    news_announce_medium: bool = True      # also announce medium-impact events that move the ACTIVE market
+    chart_views: tuple = ("structure", "indicators", "execution")
 
 
 @dataclass(frozen=True)
@@ -550,7 +555,6 @@ class BrainConfig:
     enforce: bool = False                   # start in advisory/shadow mode; deterministic kernel remains authoritative
     max_workers: int = 4
     journal_file: str = "data/v5_brain.jsonl"
-    health_report_interval_min: float = 60.0
     opportunity_report_threshold: float = 80.0
     no_trade_report_threshold: float = 55.0
     telegram_charts: bool = True
@@ -559,7 +563,7 @@ class BrainConfig:
     universe_bars: int = 180
     universe_max_symbols: int = 12          # Scan at least 12 configured markets; rank down to a smaller actionable shortlist
     llm_enabled: bool = False               # optional direct LLM call; never gives order authority
-    llm_max_tokens: int = 900
+    llm_max_tokens: int = 2000              # current models reason before answering; 900 truncated replies
     llm_timeout_s: float = 8.0
     watchlist: tuple = ("XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "XAGUSD", "US30", "NAS100", "USOIL", "BTCUSD", "AUDUSD", "USDCAD", "USDCHF")
     # Adaptive market selection: the engine can switch the active execution symbol while flat.
@@ -738,7 +742,7 @@ class Config:
             e.append("high_vol_quality_floor must be in (0,100]")
         if self.brain.max_workers < 1:
             e.append("brain.max_workers must be >= 1")
-        if self.brain.health_report_interval_min <= 0 or self.brain.opportunity_report_threshold <= 0:
+        if self.brain.opportunity_report_threshold <= 0:
             e.append("brain reporting interval and opportunity threshold must be positive")
         if not 0 < self.brain.no_trade_report_threshold <= 100:
             e.append("brain.no_trade_report_threshold must be in (0,100]")

@@ -35,6 +35,7 @@ from trade_manager import TradeManager
 from brain import V5BrainSystem
 
 log = logging.getLogger("engine")
+BROKER_DEGRADED = "broker data inconsistent: "
 
 
 class Lifecycle(str, Enum):
@@ -60,6 +61,8 @@ class AgentEngine:
         self.journal = journal or Journal(cfg.system.data_dir)
         self.state = state or State(cfg.system.state_file)
         self.alerts = alerts or Alerts(http_retries=cfg.notify.http_retries, http_retry_delay_s=cfg.notify.http_retry_delay_s)
+        if hasattr(self.alerts, "market"):
+            self.alerts.market = lambda: getattr(self.client, "symbol", None)
         self.news = news or NewsEngine(cfg)
         self.risk = RiskEngine(cfg, client, self.state, self.journal, on_pause=self._on_pause)
         self.mgr = TradeManager(cfg, client, self.state, self.journal, self.alerts)
@@ -80,6 +83,8 @@ class AgentEngine:
         self.v5_brain = V5BrainSystem(cfg, client=client, risk_engine=self.risk, alerts=self.alerts) if getattr(cfg.brain, "enabled", True) else None
         if self.v5_brain is not None:
             self.bus.subscribe("trade_close", lambda _, t: self.v5_brain.reporter.trade_feedback(t))
+            self.mgr.on_transition = lambda ticket, st, info: self.v5_brain.reporter.trade_management(
+                ticket, st, info, getattr(self.client, "symbol", ""))
         self.reconnect = ReconnectPolicy(cfg.reliability)
         self.reconcile_required = False
         self._t_sync = self._t_diag = 0.0
@@ -110,6 +115,11 @@ class AgentEngine:
         if new == self.lifecycle and (reason == self.halt_reason or
                                      (new == Lifecycle.DEGRADED and str(self.halt_reason).startswith("stale ticks")
                                       and str(reason).startswith("stale ticks"))):
+            return
+        if self.lifecycle == Lifecycle.HALTED and new == Lifecycle.DEGRADED:
+            # A safety HALT is latched and only leaves via a validated resume (or shutdown). Letting a
+            # recoverable DEGRADED condition overwrite it made the engine flap HALTED <-> DEGRADED every loop
+            # (the latch re-halts it), sending a CRITICAL alert each time.
             return
         old, self.lifecycle = self.lifecycle, new
         self.halt_reason = reason if new in (Lifecycle.HALTED, Lifecycle.DEGRADED) else ""
@@ -264,7 +274,7 @@ class AgentEngine:
             self.views[tf] = self._cache[key]
 
     def run_reconcile(self):
-        on_close = (lambda r: self.bus.publish("trade_close", r)) if (self.notifier or self.v5_brain is not None) else None
+        on_close = (lambda r: self.bus.publish("trade_close", {"symbol": getattr(self.client, "symbol", ""), **r})) if (self.notifier or self.v5_brain is not None) else None
         rep = reconcile(self.cfg, self.client, self.state, self.journal, self.risk, self.views, self.alerts, on_close)
         self.recon_critical = rep.critical
         for c in rep.critical:
@@ -367,16 +377,21 @@ class AgentEngine:
             self._t_diag = time.time()
             dg = self.client.broker_diagnosis()
             self.journal.event("broker_diagnosis", status=dg.status, cause=dg.cause, errors=dg.errors)
+            # Inconsistent broker data is a recoverable condition: block entries (DEGRADED) and recover
+            # automatically once the diagnosis is clean. It used to HALT, which writes the durable latch, and
+            # then auto-resume to RUNNING, which the latch immediately reverted (flapping + alert spam).
             if dg.status == "FAIL":
-                self.set_lifecycle(Lifecycle.HALTED, "broker data inconsistent: " + "; ".join(dg.errors))
-            elif self.lifecycle == Lifecycle.HALTED and self.halt_reason.startswith("broker data inconsistent"):
+                self.set_lifecycle(Lifecycle.DEGRADED, BROKER_DEGRADED + "; ".join(dg.errors))
+            elif self.lifecycle == Lifecycle.DEGRADED and self.halt_reason.startswith(BROKER_DEGRADED):
                 self.set_lifecycle(Lifecycle.RUNNING)
         self.monitor.sample()
         self.micro = self.monitor.evaluate()
         age = self.client.tick_age_s()
+        broker_degraded = self.lifecycle == Lifecycle.DEGRADED and self.halt_reason.startswith(BROKER_DEGRADED)
         if age > cfg.execution.max_tick_age_s and market_open_guess(now):
-            self.set_lifecycle(Lifecycle.DEGRADED, f"stale ticks ({age:.0f}s)")
-        elif self.lifecycle == Lifecycle.DEGRADED:
+            if not broker_degraded:          # keep the broker reason: only a clean diagnosis may clear it
+                self.set_lifecycle(Lifecycle.DEGRADED, f"stale ticks ({age:.0f}s)")
+        elif self.lifecycle == Lifecycle.DEGRADED and not broker_degraded:
             self.set_lifecycle(Lifecycle.RUNNING)
 
         self.risk.refresh()
@@ -524,14 +539,8 @@ class AgentEngine:
             return self._disarm("CANCELLED", "risk gate at entry: " + why)
         out = self.execution.execute(a.dec, a.ms, positions, self.news_ctx)
         self.armed = None
-        if out.executed and self.v5_brain is not None:
-            det = out.details or {}
-            self.v5_brain.reporter.trade_entry_feedback({
-                "symbol": self.client.symbol, "direction": a.dec.direction, "setup": a.dec.setup,
-                "entry": (det.get("execution") or {}).get("fill", a.dec.entry), "sl": a.dec.sl, "tp": a.dec.tp,
-                "lots": out.lots, "risk_pct": a.dec.risk_pct, "rr": a.dec.rr, "mode": self.cfg.system.mode,
-                "ticket": out.ticket or (det.get("execution") or {}).get("ticket", 0)
-            })
+        if out.executed:
+            self._report_entry(a.dec, out)
         det = out.details or {}
         stage = "EXECUTED" if out.executed else "EXECUTION_REJECTED"
         self.bus.publish("record", records.build(a.dec, a.ms, self.news_ctx, self.cfg, self.client.symbol, stage,
@@ -539,6 +548,21 @@ class AgentEngine:
                                                   det.get("execution")))
         log.info("M1 refinement GO (%s): %s", res.reason, out.reason)
         return out
+
+    def _report_entry(self, dec, out):
+        """Trade-opened report built from the executed order (broker entry/SL/TP), never re-derived levels."""
+        if self.v5_brain is None:
+            return
+        ex = (out.details or {}).get("execution") or {}
+        try:
+            self.v5_brain.reporter.trade_entry_feedback({
+                "symbol": self.client.symbol, "direction": dec.direction, "setup": dec.setup,
+                "entry": ex.get("fill", dec.entry), "sl": ex.get("sl") or dec.sl, "tp": ex.get("tp") or dec.tp,
+                "tp1": getattr(dec, "tp1", None), "lots": out.lots, "risk_pct": dec.risk_pct, "rr": dec.rr,
+                "mode": self.cfg.system.mode, "ticket": out.ticket or ex.get("ticket", 0)},
+                dec=dec, frames=self.raw_frames)
+        except Exception as ex_:
+            log.warning("trade-open report failed (trading unaffected): %s", ex_)
 
     def _disarm(self, stage, reason):
         a, self.armed = self.armed, None
@@ -647,7 +671,8 @@ class AgentEngine:
             self.journal.event("adaptive_market_selected", symbol=selected, reason=result.get("reason", ""),
                                ranking=[{"symbol": r.symbol, "score": r.ranking_score, "affordable": r.affordable}
                                         for r in (result.get("rows") or [])[:5]])
-            self.alerts.send("INFO", f"Adaptive market selector chose {selected} as the best account-affordable candidate", key="adaptive_select:" + selected)
+            if self.v5_brain.reporter.tg.enabled is False:     # the V5 selector report already announces it on Telegram
+                self.alerts.send("INFO", f"Adaptive market selector chose {selected} as the best account-affordable candidate", key="adaptive_select:" + selected)
             return True
         except Exception as ex:
             log.exception("adaptive market selection failed; retaining current market: %s", ex)
@@ -742,14 +767,8 @@ class AgentEngine:
             return dec
         if dec.is_entry:
             out = self.execution.execute(dec, ms, positions, self.news_ctx)
-            if out.executed and self.v5_brain is not None:
-                det = out.details or {}
-                self.v5_brain.reporter.trade_entry_feedback({
-                    "symbol": self.client.symbol, "direction": dec.direction, "setup": dec.setup,
-                    "entry": (det.get("execution") or {}).get("fill", dec.entry), "sl": dec.sl, "tp": dec.tp,
-                    "lots": out.lots, "risk_pct": dec.risk_pct, "rr": dec.rr, "mode": cfg.system.mode,
-                    "ticket": out.ticket or (det.get("execution") or {}).get("ticket", 0)
-                })
+            if out.executed:
+                self._report_entry(dec, out)
             if not out.executed:
                 dec.wait_reason = "EXECUTION"
             log.info("execution: %s", out.reason)

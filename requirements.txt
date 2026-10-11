@@ -10,5 +10,6 @@ MetaTrader5==5.0.6231
 anthropic>=0.40,<1
 openai>=1.40,<3      # optional: only for INTEL__PROVIDER=openai (untested here)
 psutil>=5.9        # optional: CPU/memory in heartbeats
+tzdata>=2024.1     # IANA zones for zoneinfo on Windows (Asia/Beirut display time)
 
 matplotlib>=3.8,<4

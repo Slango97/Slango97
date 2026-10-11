@@ -93,3 +93,17 @@ def profile_for(symbol, info=None):
         yl = (1.0 if q == "JPY" else 0.8) if b == "USD" else -0.6 if q == "USD" else 0.0
         return InstrumentProfile(raw, "fx", b, q, (b, q, "All"), usd, yl, _clip(RISK.get(b, 0.0) - RISK.get(q, 0.0)))
     return InstrumentProfile(raw, "other", b or s[:3], q or "USD", ("USD", "All"), 0.0, 0.0, 0.0)
+
+
+def affected_markets(currency, category, symbols):
+    """Markets in `symbols` a release for `currency` moves, with the direction when the data is GOOD for that
+    currency (+1 instrument up / -1 down), strongest first. Drives the 'affected markets' line of news alerts."""
+    out = []
+    for s in symbols or ():
+        try:
+            eff = instrument_effect(profile_for(s), currency, category)
+        except Exception:
+            continue
+        if eff:
+            out.append((s, eff))
+    return sorted(out, key=lambda x: -abs(x[1]))

@@ -90,7 +90,11 @@ class V5Workflow:
         risk = self.risk.run(decision, safety, account, positions or [], self.risk_engine, getattr(ms, "regime", None), self.cfg)
         chief = self.chief.run(symbol=symbol, decision=decision, connection=conn, technical=tech, quant=quant,
                                news=news, intermarket=inter, opportunity=opp, risk=risk, critic=critic)
-        llm_payload = {"deterministic": chief.to_dict(), "technical": tech.to_dict(), "news": news.to_dict(),
+        from instruments import profile_for
+        from intel import instrument_drivers
+        _desc, _drivers = instrument_drivers(profile_for(symbol))
+        llm_payload = {"instrument": symbol, "instrument_drivers": f"{_desc}: {_drivers}",
+                       "deterministic": chief.to_dict(), "technical": tech.to_dict(), "news": news.to_dict(),
                        "quantitative": quant.to_dict(), "intermarket": inter.to_dict(), "risk": risk.to_dict()}
         llm = self.llm.reason(llm_payload)
         if llm is not None:

@@ -26,6 +26,9 @@ class Alerts:
         self._q = queue.Queue(maxsize=200)
         self._sender = sender or self._deliver
         self.sent = []
+        # Active-market identity (spec section 13): the engine points this at the CURRENT adaptive selection,
+        # so a message never carries the startup symbol after the selector switched markets.
+        self.market = None
         self._t = threading.Thread(target=self._worker, daemon=True)
         self._t.start()
 
@@ -37,9 +40,16 @@ class Alerts:
             return
         self._last[k] = now
         try:
-            self._q.put_nowait(f"{LEVELS.get(level, '')} XAUUSD agent [{level}] {text}")
+            self._q.put_nowait(f"{LEVELS.get(level, '')} {self.identity()} [{level}] {text}")
         except queue.Full:
             pass
+
+    def identity(self):
+        try:
+            sym = self.market() if callable(self.market) else self.market
+        except Exception:
+            sym = None
+        return f"SLANGO PRO TRADER | Active market: {sym}" if sym else "SLANGO PRO TRADER"
 
     def flush(self, timeout=5.0):
         end = time.time() + timeout
