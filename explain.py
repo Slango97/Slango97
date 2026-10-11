@@ -18,7 +18,7 @@ def fmt_open(rec):
     if c is None:
         return None
     ra, ex, n = rec.get("risk_authorization") or {}, rec.get("execution") or {}, rec.get("news") or {}
-    lines = [f"OPEN {c['direction']} XAUUSD - {c['setup']} ({c['style']})",
+    lines = [f"OPEN {c['direction']} {rec.get('symbol') or 'MARKET'} - {c['setup']} ({c['style']})",
              f"Entry {ex.get('fill', c['entry'])}  SL {c['sl']}  TP {c['tp']}  R:R {c['rr']}",
              f"Risk {ra.get('risk_pct', 0):.2f}% ({ra.get('lots', '?')} lots), tier {ra.get('tier', 'fixed')}",
              f"Regime {(rec.get('regime') or {}).get('label', '?')} | session {rec['session']} | market quality {(rec.get('market_quality') or {}).get('score', '?')}",
@@ -56,7 +56,7 @@ def fmt_rejected(rec, c):
 def fmt_close(t):
     fmt = lambda x, f: (f.format(x) if isinstance(x, (int, float)) else "n/a")
     return "\n".join([
-        f"CLOSE {'BUY' if t.get('direction', 1) > 0 else 'SELL'} XAUUSD - {t.get('setup', '?')} ({t.get('style', '?')})",
+        f"CLOSE {'BUY' if t.get('direction', 1) > 0 else 'SELL'} {t.get('symbol') or 'MARKET'} - {t.get('setup', '?')} ({t.get('style', '?')})",
         f"Entry {fmt(t.get('entry'), '{:.2f}')}  Exit {fmt(t.get('exit'), '{:.2f}')}  P/L {fmt(t.get('net_pnl'), '{:+.2f}')}  R {fmt(t.get('r_multiple'), '{:+.2f}')}",
         f"Exit reason: {t.get('reason', '?')}",
         f"MFE {fmt(t.get('mfe_r'), '{:+.2f}')}R  MAE {fmt(t.get('mae_r'), '{:+.2f}')}R  hold {fmt(t.get('hold_h'), '{:.1f}')}h",

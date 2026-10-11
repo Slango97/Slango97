@@ -9,12 +9,18 @@ log = logging.getLogger("manager")
 class TradeManager:
     def __init__(self, cfg, client, state, journal, alerts=None):
         self.cfg, self.c, self.state, self.journal, self.alerts = cfg, client, state, journal, alerts
+        self.on_transition = None          # reporting hook (TP1 / break-even); never affects management
 
     def transition(self, ticket, new_state, **info):
         st = self.state.trades.get(str(ticket))
         if st:
             st["lifecycle"] = new_state
         self.journal.event("lifecycle", ticket=ticket, state=new_state, **info)
+        if self.on_transition is not None:
+            try:
+                self.on_transition(ticket, new_state, info)
+            except Exception as ex:
+                log.warning("transition report failed: %s", ex)
 
     def register(self, pos, dec, res, approval, ms, news=None, spread_at_send=None):
         """Create the management record for a freshly filled position, using ACTUAL fill data, plus the
@@ -91,7 +97,7 @@ class TradeManager:
                 st["last_sl"] = a.value
                 if a.flag == "be":
                     st["be"] = True
-                log.info("ticket %s: SL -> %.2f (%s)", p.ticket, a.value, a.reason)
+                log.info("ticket %s: SL -> %s (%s)", p.ticket, a.value, a.reason)
                 self.transition(p.ticket, "BE" if a.flag == "be" else "TRAILING", sl=a.value, reason=a.reason)
             return ok
         return False

@@ -11,7 +11,7 @@ class V5BrainSystem:
         self.cfg = cfg
         self.client = client
         self.workflow = V5Workflow(cfg, client=client, risk_engine=risk_engine, alerts=alerts)
-        self.reporter = V5Reporter(cfg, alerts=alerts)
+        self.reporter = V5Reporter(cfg, alerts=alerts, market=lambda: getattr(client, "symbol", ""))
         self.universe = MarketUniverseBrain(cfg)
         self._universe_last = 0.0
         self.enabled = bool(getattr(cfg.brain, "enabled", True))
@@ -24,7 +24,8 @@ class V5BrainSystem:
         run = self.workflow.run(lifecycle=lifecycle, ms=ms, decision=decision, news_ctx=news_ctx,
                                 positions=positions, frames=frames, aux=aux,
                                 reconciliation_ok=reconciliation_ok, state_recovery_pending=state_recovery_pending)
-        self.reporter.publish(run, frames=frames, force_health=force_health)
+        self.reporter.publish(run, frames=frames, force_health=force_health, deterministic=decision,
+                              views=getattr(ms, "views", None))
         return run
 
     def select_market_if_due(self, *, primary_views=None, force=False, allow_switch=True):
@@ -52,8 +53,10 @@ class V5BrainSystem:
         rows = self.universe.scan(self.client, primary_symbol=getattr(self.client, "symbol", ""),
                                   primary_views=primary_views)
         ranked = self.universe.rank(self.client, rows, cfg=self.cfg)
+        evidence_ok = self._apply_market_evidence(ranked)
         self.reporter.selection_report(ranked)
-        eligible = [r for r in ranked if r.status == "OK" and r.affordable and r.ranking_score >= float(getattr(self.cfg.brain, "adaptive_selection_min_score", 65.0))]
+        eligible = [r for r in ranked if r.status == "OK" and r.affordable and evidence_ok.get(r.symbol, True)
+                    and r.ranking_score >= float(getattr(self.cfg.brain, "adaptive_selection_min_score", 65.0))]
         if not eligible:
             return {"selected": None, "rows": ranked, "reason": "no account-affordable market met the selection threshold"}
         best = eligible[0]
@@ -63,6 +66,22 @@ class V5BrainSystem:
             self.client.switch_symbol(best.symbol)
             return {"selected": best.symbol, "rows": ranked, "changed": True, "reason": "adaptive selector chose higher-ranked affordable market"}
         return {"selected": None, "rows": ranked, "reason": "client does not support safe symbol switching"}
+
+    def _apply_market_evidence(self, ranked):
+        """V5.6: with BRAIN__REQUIRE_MARKET_EVIDENCE a market needs a fresh walk-forward PASS to be selectable."""
+        if not bool(getattr(self.cfg.brain, "require_market_evidence", False)):
+            return {}
+        from market_evidence import status_for
+        out = {}
+        for r in ranked:
+            if not r.symbol:
+                continue
+            ok, st, why = status_for(r.symbol, self.cfg.brain.market_evidence_file,
+                                     self.cfg.learning.market_evidence_max_age_days)
+            r.evidence, out[r.symbol] = st, ok
+            if not ok:
+                r.selection_reasons = ["NO OUT-OF-SAMPLE EVIDENCE: " + why] + list(r.selection_reasons)
+        return out
 
     def scan_universe_if_due(self, *, primary_views=None, force=False):
         if not self.enabled or not bool(getattr(self.cfg.brain, "universe_enabled", True)):

@@ -35,6 +35,7 @@ from trade_manager import TradeManager
 from brain import V5BrainSystem
 
 log = logging.getLogger("engine")
+BROKER_DEGRADED = "broker data inconsistent: "
 
 
 class Lifecycle(str, Enum):
@@ -60,6 +61,8 @@ class AgentEngine:
         self.journal = journal or Journal(cfg.system.data_dir)
         self.state = state or State(cfg.system.state_file)
         self.alerts = alerts or Alerts(http_retries=cfg.notify.http_retries, http_retry_delay_s=cfg.notify.http_retry_delay_s)
+        if hasattr(self.alerts, "market"):
+            self.alerts.market = lambda: getattr(self.client, "symbol", None)
         self.news = news or NewsEngine(cfg)
         self.risk = RiskEngine(cfg, client, self.state, self.journal, on_pause=self._on_pause)
         self.mgr = TradeManager(cfg, client, self.state, self.journal, self.alerts)
@@ -80,6 +83,8 @@ class AgentEngine:
         self.v5_brain = V5BrainSystem(cfg, client=client, risk_engine=self.risk, alerts=self.alerts) if getattr(cfg.brain, "enabled", True) else None
         if self.v5_brain is not None:
             self.bus.subscribe("trade_close", lambda _, t: self.v5_brain.reporter.trade_feedback(t))
+            self.mgr.on_transition = lambda ticket, st, info: self.v5_brain.reporter.trade_management(
+                ticket, st, info, getattr(self.client, "symbol", ""))
         self.reconnect = ReconnectPolicy(cfg.reliability)
         self.reconcile_required = False
         self._t_sync = self._t_diag = 0.0
@@ -110,6 +115,11 @@ class AgentEngine:
         if new == self.lifecycle and (reason == self.halt_reason or
                                      (new == Lifecycle.DEGRADED and str(self.halt_reason).startswith("stale ticks")
                                       and str(reason).startswith("stale ticks"))):
+            return
+        if self.lifecycle == Lifecycle.HALTED and new == Lifecycle.DEGRADED:
+            # A safety HALT is latched and only leaves via a validated resume (or shutdown). Letting a
+            # recoverable DEGRADED condition overwrite it made the engine flap HALTED <-> DEGRADED every loop
+            # (the latch re-halts it), sending a CRITICAL alert each time.
             return
         old, self.lifecycle = self.lifecycle, new
         self.halt_reason = reason if new in (Lifecycle.HALTED, Lifecycle.DEGRADED) else ""
@@ -178,7 +188,8 @@ class AgentEngine:
     def status_text(self):
         s = self.health.snapshot(self.lifecycle.value, self.client, self.state, self.risk)
         d = self.last_decision
-        return (f"{self.lifecycle.value} {self.halt_reason}\nequity {s.get('equity')} | positions {s.get('open_positions')} | "
+        import rollout
+        return (f"{self.lifecycle.value} {self.halt_reason} | rollout {rollout.stage(self.cfg)}\nequity {s.get('equity')} | positions {s.get('open_positions')} | "
                 f"day P/L {s.get('day_pnl')}\nregime {self.regime.label if self.regime else '?'} | "
                 f"last decision {d.action + ' ' + (d.wait_reason or d.setup) if d else 'none'}")
 
@@ -205,6 +216,7 @@ class AgentEngine:
         for w in warns:
             log.info("broker: %s", w)
         problems += errs
+        problems += self._rollout_startup_checks()
         self.set_lifecycle(Lifecycle.SYNCING)
         if cfg.dry_run and self.client.positions():
             self.alerts.send("WARN", "Agent positions exist but mode is DRY_RUN: they are NOT being managed. "
@@ -233,6 +245,41 @@ class AgentEngine:
             self.set_lifecycle(Lifecycle.RUNNING)
             self._apply_profile()
             self.alerts.send("INFO", f"Agent started in {cfg.system.mode} mode on {self.client.symbol}", key="start")
+
+    def _rollout_startup_checks(self):
+        """V5.10 deployment ladder: LIVE only on the promoted account; DEMO before promotion is advisory."""
+        import rollout
+        try:
+            st = rollout.ensure(self.cfg)
+        except Exception as ex:
+            return [f"rollout state unavailable: {ex}"] if self.cfg.system.mode == "LIVE" and self.cfg.rollout.enforce_live else []
+        acc = self.client.account()
+        ok, why = rollout.live_permission(self.cfg, getattr(acc, "login", None), getattr(acc, "server", ""))
+        if not ok:
+            return [why]
+        if self.cfg.system.mode == "DEMO" and st.get("stage") == "DRY_RUN":
+            self.alerts.send("WARN", "Running DEMO before the DRY_RUN stage was passed: `python rollout.py status` "
+                                     "shows what is missing (advisory: no real money at risk).", key="rollout_demo")
+        self.journal.event("rollout_stage", stage=st.get("stage"), since=st.get("since"))
+        return []
+
+    def rollout_review(self):
+        """Daily: a failing live stage is demoted (FULL -> PILOT) or halted (PILOT) automatically."""
+        import rollout
+        try:
+            res = rollout.review(self.cfg)
+        except Exception as ex:
+            log.warning("rollout review failed: %s", ex)
+            return None
+        if res is None:
+            return None
+        kind, msg = res
+        self.journal.event("rollout_review", action=kind, detail=msg)
+        if kind == "demote":
+            self.alerts.send("CRITICAL", "ROLLOUT DEMOTION: " + msg, key="rollout_demote")
+        else:
+            self.set_lifecycle(Lifecycle.HALTED, "rollout: " + msg)
+        return res
 
     # ---- data -------------------------------------------------------
     def refresh_views(self, force=False):
@@ -264,7 +311,7 @@ class AgentEngine:
             self.views[tf] = self._cache[key]
 
     def run_reconcile(self):
-        on_close = (lambda r: self.bus.publish("trade_close", r)) if (self.notifier or self.v5_brain is not None) else None
+        on_close = (lambda r: self.bus.publish("trade_close", {"symbol": getattr(self.client, "symbol", ""), **r})) if (self.notifier or self.v5_brain is not None) else None
         rep = reconcile(self.cfg, self.client, self.state, self.journal, self.risk, self.views, self.alerts, on_close)
         self.recon_critical = rep.critical
         for c in rep.critical:
@@ -367,16 +414,21 @@ class AgentEngine:
             self._t_diag = time.time()
             dg = self.client.broker_diagnosis()
             self.journal.event("broker_diagnosis", status=dg.status, cause=dg.cause, errors=dg.errors)
+            # Inconsistent broker data is a recoverable condition: block entries (DEGRADED) and recover
+            # automatically once the diagnosis is clean. It used to HALT, which writes the durable latch, and
+            # then auto-resume to RUNNING, which the latch immediately reverted (flapping + alert spam).
             if dg.status == "FAIL":
-                self.set_lifecycle(Lifecycle.HALTED, "broker data inconsistent: " + "; ".join(dg.errors))
-            elif self.lifecycle == Lifecycle.HALTED and self.halt_reason.startswith("broker data inconsistent"):
+                self.set_lifecycle(Lifecycle.DEGRADED, BROKER_DEGRADED + "; ".join(dg.errors))
+            elif self.lifecycle == Lifecycle.DEGRADED and self.halt_reason.startswith(BROKER_DEGRADED):
                 self.set_lifecycle(Lifecycle.RUNNING)
         self.monitor.sample()
         self.micro = self.monitor.evaluate()
         age = self.client.tick_age_s()
+        broker_degraded = self.lifecycle == Lifecycle.DEGRADED and self.halt_reason.startswith(BROKER_DEGRADED)
         if age > cfg.execution.max_tick_age_s and market_open_guess(now):
-            self.set_lifecycle(Lifecycle.DEGRADED, f"stale ticks ({age:.0f}s)")
-        elif self.lifecycle == Lifecycle.DEGRADED:
+            if not broker_degraded:          # keep the broker reason: only a clean diagnosis may clear it
+                self.set_lifecycle(Lifecycle.DEGRADED, f"stale ticks ({age:.0f}s)")
+        elif self.lifecycle == Lifecycle.DEGRADED and not broker_degraded:
             self.set_lifecycle(Lifecycle.RUNNING)
 
         self.risk.refresh()
@@ -524,14 +576,8 @@ class AgentEngine:
             return self._disarm("CANCELLED", "risk gate at entry: " + why)
         out = self.execution.execute(a.dec, a.ms, positions, self.news_ctx)
         self.armed = None
-        if out.executed and self.v5_brain is not None:
-            det = out.details or {}
-            self.v5_brain.reporter.trade_entry_feedback({
-                "symbol": self.client.symbol, "direction": a.dec.direction, "setup": a.dec.setup,
-                "entry": (det.get("execution") or {}).get("fill", a.dec.entry), "sl": a.dec.sl, "tp": a.dec.tp,
-                "lots": out.lots, "risk_pct": a.dec.risk_pct, "rr": a.dec.rr, "mode": self.cfg.system.mode,
-                "ticket": out.ticket or (det.get("execution") or {}).get("ticket", 0)
-            })
+        if out.executed:
+            self._report_entry(a.dec, out)
         det = out.details or {}
         stage = "EXECUTED" if out.executed else "EXECUTION_REJECTED"
         self.bus.publish("record", records.build(a.dec, a.ms, self.news_ctx, self.cfg, self.client.symbol, stage,
@@ -539,6 +585,21 @@ class AgentEngine:
                                                   det.get("execution")))
         log.info("M1 refinement GO (%s): %s", res.reason, out.reason)
         return out
+
+    def _report_entry(self, dec, out):
+        """Trade-opened report built from the executed order (broker entry/SL/TP), never re-derived levels."""
+        if self.v5_brain is None:
+            return
+        ex = (out.details or {}).get("execution") or {}
+        try:
+            self.v5_brain.reporter.trade_entry_feedback({
+                "symbol": self.client.symbol, "direction": dec.direction, "setup": dec.setup,
+                "entry": ex.get("fill", dec.entry), "sl": ex.get("sl") or dec.sl, "tp": ex.get("tp") or dec.tp,
+                "tp1": getattr(dec, "tp1", None), "lots": out.lots, "risk_pct": dec.risk_pct, "rr": dec.rr,
+                "mode": self.cfg.system.mode, "ticket": out.ticket or ex.get("ticket", 0)},
+                dec=dec, frames=self.raw_frames)
+        except Exception as ex_:
+            log.warning("trade-open report failed (trading unaffected): %s", ex_)
 
     def _disarm(self, stage, reason):
         a, self.armed = self.armed, None
@@ -562,6 +623,10 @@ class AgentEngine:
             n = self.news_ctx
             if n is not None and not getattr(n, "calendar_ok", False):
                 return False, "economic calendar unavailable/stale: entries fail closed"
+        from market_evidence import gate as evidence_gate
+        ok_ev, why_ev = evidence_gate(self.cfg, self.client.symbol)
+        if not ok_ev:
+            return False, "market evidence: " + why_ev
         if self.armed is not None:
             return True, "ok"
         missing = [tf for tf in ("M5", "M15", "H1") if tf not in self.views]
@@ -647,7 +712,8 @@ class AgentEngine:
             self.journal.event("adaptive_market_selected", symbol=selected, reason=result.get("reason", ""),
                                ranking=[{"symbol": r.symbol, "score": r.ranking_score, "affordable": r.affordable}
                                         for r in (result.get("rows") or [])[:5]])
-            self.alerts.send("INFO", f"Adaptive market selector chose {selected} as the best account-affordable candidate", key="adaptive_select:" + selected)
+            if self.v5_brain.reporter.tg.enabled is False:     # the V5 selector report already announces it on Telegram
+                self.alerts.send("INFO", f"Adaptive market selector chose {selected} as the best account-affordable candidate", key="adaptive_select:" + selected)
             return True
         except Exception as ex:
             log.exception("adaptive market selection failed; retaining current market: %s", ex)
@@ -742,14 +808,8 @@ class AgentEngine:
             return dec
         if dec.is_entry:
             out = self.execution.execute(dec, ms, positions, self.news_ctx)
-            if out.executed and self.v5_brain is not None:
-                det = out.details or {}
-                self.v5_brain.reporter.trade_entry_feedback({
-                    "symbol": self.client.symbol, "direction": dec.direction, "setup": dec.setup,
-                    "entry": (det.get("execution") or {}).get("fill", dec.entry), "sl": dec.sl, "tp": dec.tp,
-                    "lots": out.lots, "risk_pct": dec.risk_pct, "rr": dec.rr, "mode": cfg.system.mode,
-                    "ticket": out.ticket or (det.get("execution") or {}).get("ticket", 0)
-                })
+            if out.executed:
+                self._report_entry(dec, out)
             if not out.executed:
                 dec.wait_reason = "EXECUTION"
             log.info("execution: %s", out.reason)
@@ -778,6 +838,22 @@ class AgentEngine:
                     news_age_h=(round(max(0.0, (time.time() - getattr(self.news, "heads_at", 0)) / 3600), 3)
                                 if getattr(self.news, "heads_at", 0) else None),
                     waits=dict(self.wait_counts.most_common(6)))
+        try:
+            ref = self.views.get("M15") or self.views.get("H1") or {}
+            scale, parts = self.risk.exposure_scale(ref.get("atr_ratio"))
+            snap.update(exposure_scale=scale, exposure_parts=parts)
+            if self.v5_brain is not None:
+                self.v5_brain.reporter.exposure_report(scale, parts)
+        except Exception as ex:
+            log.debug("exposure scale unavailable: %s", ex)
+        try:                                        # V5.8 live cross-market correlation matrix (hourly)
+            resolve = (lambda mk: self.v5_brain.universe.resolve(self.client, mk)) if self.v5_brain is not None else None
+            m = self.risk.portfolio.refresh_matrix_if_due(list(self.cfg.brain.watchlist), resolve)
+            if m is not None:
+                self.journal.event("correlation_matrix", markets=len(m.data.get("markets", [])),
+                                   strong=m.strong_pairs(self.cfg.portfolio.corr_report_threshold)[:8])
+        except Exception as ex:
+            log.debug("correlation matrix refresh failed: %s", ex)
         if self.v5_brain is not None and self.lifecycle == Lifecycle.RUNNING:
             try:
                 self.v5_brain.scan_universe_if_due(primary_views=self.views)
@@ -811,9 +887,33 @@ class AgentEngine:
         except Exception as ex:
             log.warning("routine report failed: %s", ex)
 
+    def ai_evidence_daily(self, now):
+        """V5.9: once a day score yesterday's AI opinions / vetoes against live MT5 prices and refresh the verdict."""
+        today = str(now.date())
+        if getattr(self, "_ai_eval_day", None) == today or not hasattr(self.client, "rates_for"):
+            return None
+        self._ai_eval_day = today
+        try:
+            from intel_evaluation import collect, evaluate, publish
+            new = collect(self.cfg, lambda sym: self.client.rates_for(sym, "M5", 6000)[0])
+            ev = evaluate(self.cfg)
+            publish(self.cfg, ev)
+            self.journal.event("ai_evidence", new_items=len(new), news=ev["news_intel"]["verdict"],
+                               v5=ev["v5_brain_veto"]["verdict"])
+            if self.v5_brain is not None:
+                self.v5_brain.reporter.ai_evidence_report(ev)
+            return ev
+        except Exception as ex:
+            log.warning("AI evidence evaluation failed (trading unaffected): %s", ex)
+            return None
+
     def daily_report(self, now):
         today = str(now.date())
         self.routine_reports(now)
+        self.ai_evidence_daily(now)
+        if getattr(self, "_rollout_day", None) != today:
+            self._rollout_day = today
+            self.rollout_review()
         if self._report_day == today or now.hour != self.cfg.emergency.daily_report_hour_utc:
             return
         self._report_day = today

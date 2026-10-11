@@ -322,6 +322,7 @@ def test_engine_applies_the_instrument_profile_and_cfd_spread_cap():
 
 def test_watchlist_and_multi_market_launcher_follow_the_blueprint():
     from pathlib import Path
-    assert CFG.brain.universe_max_symbols <= 5
+    # V5.4 scans a 12-market universe (ranking still narrows it to an actionable shortlist)
+    assert 2 <= CFG.brain.universe_max_symbols <= 12 and len(CFG.brain.watchlist) >= CFG.brain.universe_max_symbols
     bat = (Path(__file__).resolve().parent.parent / "START_MULTI_V5_WINDOWS.bat").read_text()
     assert "SYSTEM__SYMBOL" in bat and "SYSTEM__DATA_DIR" in bat

@@ -1,3 +1,50 @@
+# Slango Pro Trader — V5.10 (Expert AI Agent Pro Trader)
+
+## V5.10 enforced deployment ladder (see V5_10_CHANGELOG.md, ROLLOUT_AR.md)
+
+DRY_RUN -> DEMO -> LIVE_PILOT -> LIVE_FULL is now enforced by `rollout.py`, judged from the system's own journals:
+LIVE refuses to start unless the connected real account was promoted (recorded, hash-chained, with evidence);
+LIVE_PILOT trades at most 0.25% with one position; live stages are reviewed daily and demoted automatically.
+`ROLLOUT_STATUS_WINDOWS.bat` shows the checklist. Suite: 303 passed.
+
+## V5.9 AI influence must be earned with evidence (see V5_9_CHANGELOG.md, AI_EVIDENCE_AR.md)
+
+Every AI news view is logged and later scored against what price actually did (ATR-normalised, exact binomial test
+vs a coin); vetoed candidates and V5-brain vetoes get counterfactual R. Until the news AI is PROVEN it may only
+reduce risk (oppose / veto), never add score; the V5 veto evidence tells you whether BRAIN__ENFORCE is justified.
+Runs daily on live prices and offline from exported history. Suite: 293 passed.
+
+## V5.8 live cross-market correlation matrix (see V5_8_CHANGELOG.md, CORRELATION_MATRIX_AR.md)
+
+Portfolio risk now uses correlations measured every hour from the broker's H1 bars for the whole watchlist (long and
+short window, shrunk toward the factor prior), maps broker names (XAUUSDs, US30Cash) to markets, sizes each pair at
+the more dangerous end of its range and only half-trusts hedges. Stale matrix -> factor prior (now covering all 12
+markets). Daily report lists the correlated clusters. Suite: 283 passed.
+
+## V5.7 drawdown- and volatility-aware exposure scaling (see V5_7_CHANGELOG.md, EXPOSURE_SCALING_AR.md)
+
+Per-trade risk now shrinks automatically - and only ever shrinks - when the account is more than 2% below its
+equity peak (linear to x0.35 at 6%), when market ATR exceeds 1.3x its recent average, or when the account's own
+daily volatility exceeds a 12%/yr target. Live trading and the backtester share one function, the market research
+judges the sizing actually used and reports with-vs-without scaling, and Telegram reports only band changes.
+Suite: 276 passed.
+
+## V5.6 per-market walk-forward evidence (see V5_6_CHANGELOG.md, MARKET_RESEARCH_AR.md)
+
+`RESEARCH_MARKETS_WINDOWS.bat` exports your broker's history for all 12 watchlist markets and runs walk-forward,
+cost-stress and Monte Carlo tests per market against PF >= 1.3, Sharpe >= 0.8, max DD < 15%. With
+`BRAIN__REQUIRE_MARKET_EVIDENCE=true` only markets with a fresh PASS can be selected or traded. Suite: 268 passed.
+
+## V5.5 audit & intelligence upgrade (see V5_5_CHANGELOG.md, VALIDATION_REPORT_V5_5.md, SYSTEM_AUDIT_V5_5_AR.md)
+
+A full-system audit fixed defects that mattered once the adaptive selector started trading markets other than gold:
+2-decimal price rounding (EURUSD TP1 could trigger right after entry), a gold-only news-intelligence prompt applied
+to every market, HALTED/DEGRADED alert flapping, hard-coded "XAUUSD" message identity and duplicate trade
+messages. It also implements the Enhancement Specification: a Telegram notification state engine (no scan / no-trade
+spam, once-per-stage news and trade events), Asia/Beirut display time, stable news event IDs with announce/release
+reports and affected markets, instrument-aware LLM prompts (Anthropic or OpenAI), and three chart views whose
+execution levels are copied from the exact execution candidate. Full suite: 257 passed.
+
 # Expert AI Agent Pro Trader — V5.2 Ultimate Brain Architecture
 
 ## V5.2 (see V5_2_CHANGELOG.md)
@@ -262,6 +309,8 @@ shadow mode shows it helps on your data.
 3. After the first good install: `pip freeze > requirements.lock` and use that file from then on.
 
 ## Promotion path
+
+> V5.10: this path is now ENFORCED in software by `rollout.py` (criteria in ROLLOUT_AR.md / V5_10_CHANGELOG.md).
 
 | Stage | What | Pass criterion (suggested) |
 |---|---|---|

@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from config import LADDER
 from confluence import assess
 import levels as levels_mod
+from pricefmt import round_price
 import mtf
 from setups import classify
 
@@ -270,9 +271,9 @@ def tp1_level(c, cfg):
         if b["r"] >= c.rr - 0.25:
             break
         if b["r"] >= st.tp1_min_r:
-            return round(b["price"] - c.direction * 0.05 * risk, 2)
+            return round_price(b["price"] - c.direction * 0.05 * risk, risk)
     if c.rr >= st.tp1_default_r + 0.5:
-        return round(c.entry + c.direction * st.tp1_default_r * risk, 2)
+        return round_price(c.entry + c.direction * st.tp1_default_r * risk, risk)
     return None
 
 
@@ -354,7 +355,11 @@ def apply_policy(cands, ms, news, cfg, exclude=(), calibration=None, edge_book=N
         elif news_ok and nb <= -nc.soft_opposition_threshold:
             policy_mult = min(policy_mult, pc.soft_news_risk_mult)
             c.reasons.append(f"soft news opposition reduction ({nb:+.2f})")
-        c.components["news"] = round(min(cfg.strategy.news_max_bonus, cfg.strategy.news_max_bonus * nb), 1) if nb >= nc.support_from else 0.0
+        # V5.9: the score BONUS uses only evidence allowed to add (an unproven LLM view is excluded); opposition
+        # and vetoes above still use the full view because they can only reduce risk.
+        sb, sc_ = getattr(news, "support_bias", None), getattr(news, "support_confidence", None)
+        nb_sup = (sb * sc_ * c.direction if sb is not None and sc_ is not None else nb) if news_ok else 0.0
+        c.components["news"] = round(min(cfg.strategy.news_max_bonus, cfg.strategy.news_max_bonus * nb_sup), 1) if nb_sup >= nc.support_from else 0.0
         c.score = round(min(100.0, c.technical + c.components["news"]), 1)
         if calibration is not None:
             pr = calibration.predict(c.score, c.setup, c.regime, c.session)

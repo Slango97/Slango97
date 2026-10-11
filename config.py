@@ -90,6 +90,19 @@ class RiskConfig:
     high_vol_risk_mult: float = 0.70
     expansion_risk_mult: float = 0.80
     news_caution_risk_mult: float = 0.60
+    # V5.7 exposure scaling (Strategies Summary: drawdown-aware leverage + volatility targeting). Every factor is
+    # <= 1: scaling can only REDUCE the per-trade risk, never raise it above the configured value.
+    dd_scaling: bool = True
+    dd_scale_start_pct: float = 2.0        # drawdown from the equity peak where risk starts to shrink
+    dd_scale_full_pct: float = 6.0         # drawdown where the floor is reached (the hard halt stays max_drawdown_pct)
+    dd_scale_floor: float = 0.35
+    vol_scaling: bool = True
+    vol_scale_atr_ratio: float = 1.3       # ATR above this multiple of its recent average shrinks risk ~1/ratio
+    vol_scale_floor: float = 0.5
+    equity_vol_target_pct: float = 12.0    # annualised volatility target of the ACCOUNT's own daily returns
+    equity_vol_min_days: int = 10
+    equity_vol_floor: float = 0.5
+    exposure_scale_floor: float = 0.25     # combined multiplier never below this (smaller is a pause, not sizing)
 
 
 @dataclass(frozen=True)
@@ -362,8 +375,12 @@ def _loadings():
     # factor loadings used to derive correlations between symbols (cosine similarity)
     return {"XAUUSD": {"USD": -0.6, "GOLD": 1.0}, "XAGUSD": {"USD": -0.6, "GOLD": 0.85, "SILVER": 0.5},
             "EURUSD": {"USD": -1.0, "EUR": 0.6}, "GBPUSD": {"USD": -1.0, "GBP": 0.6},
-            "AUDUSD": {"USD": -1.0, "AUD": 0.6, "GOLD": 0.2}, "USDJPY": {"USD": 1.0, "JPY": -0.6},
-            "USDCHF": {"USD": 1.0, "CHF": -0.6}}
+            "AUDUSD": {"USD": -1.0, "AUD": 0.6, "GOLD": 0.2, "EQ": 0.2}, "USDJPY": {"USD": 1.0, "JPY": -0.6},
+            "USDCHF": {"USD": 1.0, "CHF": -0.6},
+            # V5.8: the rest of the watchlist (prior for the live matrix; used alone when no fresh matrix exists)
+            "USDCAD": {"USD": 1.0, "CAD": -0.6, "OIL": -0.2},
+            "US30": {"EQ": 1.0, "USD": -0.1}, "NAS100": {"EQ": 1.0, "TECH": 0.4, "USD": -0.1},
+            "USOIL": {"OIL": 1.0, "EQ": 0.2, "USD": -0.2}, "BTCUSD": {"CRYPTO": 1.0, "EQ": 0.4, "USD": -0.2}}
 
 
 @dataclass(frozen=True)
@@ -371,6 +388,18 @@ class PortfolioConfig:
     max_correlated_exposure_pct: float = 1.5
     loadings: dict = field(default_factory=_loadings)
     unknown_correlation: float = 0.5
+    # V5.8 live correlation matrix (correlation_matrix.py)
+    live_correlation: bool = True
+    corr_timeframe: str = "H1"
+    corr_lookback_bars: int = 720          # ~6 weeks of H1: the slow estimate
+    corr_short_bars: int = 120             # ~1 week: catches correlation spikes in stress
+    corr_min_overlap: int = 60             # fewer common bars than this -> the window is ignored (prior used)
+    corr_shrink_k: float = 100.0           # shrinkage toward the factor prior: weight n / (n + k)
+    corr_refresh_min: float = 60.0
+    corr_max_age_h: float = 12.0           # older matrix -> factor prior
+    corr_hedge_credit: float = 0.5         # share of a hedge's theoretical risk reduction that is believed
+    corr_report_threshold: float = 0.7     # |rho| shown as a cluster in the daily report
+    corr_file: str = "data/correlation_matrix.json"
 
 
 def _event_classes():
@@ -431,6 +460,17 @@ class IntelConfig:
     compat_key_env: str = "COMPAT_API_KEY"
     veto_requires_reliable_source: bool = True
     min_veto_reliability: float = 0.6
+    # V5.9 evidence gate: an LLM view may always REDUCE risk (opposition, veto); it may ADD score only after
+    # intel_evaluation.py has shown, out of sample, that its direction calls beat chance.
+    evidence_gate: bool = True
+    log_file: str = "data/intel_log.jsonl"
+    outcomes_file: str = "data/intel_outcomes.jsonl"
+    evidence_file: str = "data/intel_evidence.json"
+    evidence_min_samples: int = 50        # directional opinions needed before any verdict
+    evidence_min_vetoes: int = 20         # blocked candidates needed to judge the veto
+    evidence_alpha: float = 0.05          # one-sided binomial significance for "better than a coin"
+    evidence_max_age_days: float = 30.0
+    evidence_horizons_min: tuple = (60, 240)
 
 
 @dataclass(frozen=True)
@@ -499,6 +539,11 @@ class NotifyConfig:
     daily_report: bool = True
     http_retries: int = 3
     http_retry_delay_s: float = 0.75
+    # V5.5 Telegram intelligence (Enhancement Specification)
+    display_timezone: str = "Asia/Beirut"  # every user-facing time; IANA zone, DST handled automatically
+    news_announce_lead_min: float = 120.0  # announce a relevant event once when it is this close
+    news_announce_medium: bool = True      # also announce medium-impact events that move the ACTIVE market
+    chart_views: tuple = ("structure", "indicators", "execution")
 
 
 @dataclass(frozen=True)
@@ -523,6 +568,12 @@ class LearningConfig:
     drift_z: float = 2.0
     drift_psi: float = 0.25
     drift_min_trades: int = 30
+    # V5.6 per-market walk-forward acceptance (Strategies Summary: PF > 1.3, Sharpe > 0.8, max DD < 15%)
+    market_min_pf: float = 1.3
+    market_min_sharpe: float = 0.8
+    market_max_dd_pct: float = 15.0
+    market_stress_min_pf: float = 1.0      # still profitable with spread x stress_spread_mult, slippage x stress_slippage_mult
+    market_evidence_max_age_days: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -544,13 +595,37 @@ class ShadowConfig:
 
 
 @dataclass(frozen=True)
+class RolloutConfig:
+    """V5.10 enforced deployment ladder: DRY_RUN -> DEMO -> LIVE_PILOT -> LIVE_FULL (rollout.py)."""
+    enforce_live: bool = True               # LIVE mode needs a recorded LIVE_PILOT/LIVE_FULL promotion for THIS account
+    state_file: str = "data/rollout.json"   # account-wide (shared by multi-market instances)
+    max_incidents: int = 0                  # critical incidents tolerated inside the stage being judged
+    dry_run_min_days: float = 10.0
+    dry_run_min_signals: int = 20           # simulated entries in DRY_RUN
+    demo_min_days: float = 20.0
+    demo_min_trades: int = 40
+    demo_min_pf: float = 1.2
+    demo_max_dd_pct: float = 8.0
+    demo_max_slippage_r: float = 0.10       # mean |slippage| in R must stay this small
+    pilot_risk_pct: float = 0.25            # LIVE_PILOT: per-trade risk ceiling
+    pilot_max_open_trades: int = 1
+    pilot_min_days: float = 20.0
+    pilot_min_trades: int = 30
+    pilot_min_pf: float = 1.2
+    pilot_max_dd_pct: float = 6.0
+    pilot_max_expectancy_gap_r: float = 0.15  # live pilot expectancy may trail DEMO by at most this
+    demote_window_trades: int = 20          # automatic review of the last N trades in a live stage
+    demote_pf_below: float = 0.8
+    demote_dd_pct: float = 5.0              # drawdown inside the live stage that triggers demotion
+
+
+@dataclass(frozen=True)
 class BrainConfig:
     """Python-native V5 brain/workflow settings.  No external agent orchestrator is required."""
     enabled: bool = True
     enforce: bool = False                   # start in advisory/shadow mode; deterministic kernel remains authoritative
     max_workers: int = 4
     journal_file: str = "data/v5_brain.jsonl"
-    health_report_interval_min: float = 60.0
     opportunity_report_threshold: float = 80.0
     no_trade_report_threshold: float = 55.0
     telegram_charts: bool = True
@@ -559,7 +634,7 @@ class BrainConfig:
     universe_bars: int = 180
     universe_max_symbols: int = 12          # Scan at least 12 configured markets; rank down to a smaller actionable shortlist
     llm_enabled: bool = False               # optional direct LLM call; never gives order authority
-    llm_max_tokens: int = 900
+    llm_max_tokens: int = 2000              # current models reason before answering; 900 truncated replies
     llm_timeout_s: float = 8.0
     watchlist: tuple = ("XAUUSD", "EURUSD", "GBPUSD", "USDJPY", "XAGUSD", "US30", "NAS100", "USOIL", "BTCUSD", "AUDUSD", "USDCAD", "USDCHF")
     # Adaptive market selection: the engine can switch the active execution symbol while flat.
@@ -569,6 +644,10 @@ class BrainConfig:
     adaptive_selection_min_score: float = 65.0
     adaptive_selection_flat_only: bool = True
     adaptive_selection_allow_fixed_symbol: bool = False
+    # V5.6: only markets that PASSED the per-market walk-forward (market_research.py --publish) may be traded.
+    # Off by default so an install without research data keeps working; turn on after running the research.
+    require_market_evidence: bool = False
+    market_evidence_file: str = "data/market_evidence.json"
 
 
 @dataclass(frozen=True)
@@ -617,6 +696,7 @@ class Config:
     macro: MacroConfig = field(default_factory=MacroConfig)
     shadow: ShadowConfig = field(default_factory=ShadowConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
+    rollout: RolloutConfig = field(default_factory=RolloutConfig)
 
     @property
     def dry_run(self):
@@ -637,7 +717,7 @@ class Config:
                     m1=env_override(c.m1, "M1"), reliability=env_override(c.reliability, "RELIABILITY"),
                     notify=env_override(c.notify, "NOTIFY"), learning=env_override(c.learning, "LEARNING"),
                     macro=env_override(c.macro, "MACRO"), shadow=env_override(c.shadow, "SHADOW"),
-                    brain=env_override(c.brain, "BRAIN"))
+                    brain=env_override(c.brain, "BRAIN"), rollout=env_override(c.rollout, "ROLLOUT"))
         sysc = c.system
         extra = {}
         if os.getenv("SYMBOL"):
@@ -738,7 +818,7 @@ class Config:
             e.append("high_vol_quality_floor must be in (0,100]")
         if self.brain.max_workers < 1:
             e.append("brain.max_workers must be >= 1")
-        if self.brain.health_report_interval_min <= 0 or self.brain.opportunity_report_threshold <= 0:
+        if self.brain.opportunity_report_threshold <= 0:
             e.append("brain reporting interval and opportunity threshold must be positive")
         if not 0 < self.brain.no_trade_report_threshold <= 100:
             e.append("brain.no_trade_report_threshold must be in (0,100]")

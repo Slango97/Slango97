@@ -55,6 +55,7 @@ class MarketHealth:
     session_score: float = 0.0
     ranking_score: float = 0.0
     selection_reasons: list[str] = field(default_factory=list)
+    evidence: str = ""                      # V5.6 walk-forward status (PASS / FAIL / MISSING ...) when required
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

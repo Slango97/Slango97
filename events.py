@@ -114,6 +114,30 @@ def event_bias(ev, classes, profile=None):
     return sens * (1 if s > 0 else -1 if s < 0 else 0) * min(1.0, abs(s) / scale)
 
 
+def event_id(e, classes=None):
+    """Stable identifier per scheduled release (Enhancement Spec section 5), e.g. USD_CPI_2026-10-08_12:30.
+    The time part is UTC (canonical and DST-proof); user-facing text converts it to local time."""
+    t = e["time"]
+    cls = e.get("cls")
+    if not cls and classes:
+        cls, _ = classify_event(e.get("title", ""), classes)
+    slug = cls if cls and cls != "OTHER" else re.sub(r"[^A-Z0-9]+", "_", str(e.get("title", "")).upper()).strip("_")[:24]
+    return f"{e.get('currency', 'USD')}_{slug or 'EVENT'}_{t:%Y-%m-%d_%H:%M}"
+
+
+def event_record(e, now, classes, relevant=True):
+    """JSON-friendly snapshot of one calendar event for reporting/deduplication. Never used for trading gates."""
+    cls, _ = classify_event(e.get("title", ""), classes)
+    mins = (e["time"] - now).total_seconds() / 60
+    actual = e.get("actual")
+    released = mins <= 0 and actual not in (None, "")
+    return {"id": event_id({**e, "cls": cls}), "title": e.get("title", ""), "currency": e.get("currency", "USD"),
+            "impact": str(e.get("impact", "High")).capitalize(), "cls": cls, "category": CATEGORY.get(cls, "growth"),
+            "time": e["time"].isoformat(), "minutes_to": round(mins, 1),
+            "forecast": e.get("forecast"), "previous": e.get("previous"), "actual": actual,
+            "status": "RELEASED" if released else ("DUE" if mins <= 0 else "UPCOMING"), "relevant": bool(relevant)}
+
+
 class EventEngine:
     def __init__(self, cfg):
         self.ec = cfg.events

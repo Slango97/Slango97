@@ -3,6 +3,8 @@ generated deterministically from this record, never from free-form LLM narrative
 import uuid
 from datetime import datetime, timezone
 
+from pricefmt import round_price
+
 from decision import PRIORITY
 
 WEIGHTS = {"mtf": "w_mtf", "structure": "w_structure", "zone": "w_zone", "location": "w_location",
@@ -35,7 +37,8 @@ def candidate_record(c, cfg, selected=False):
             "strong_evidence_domains": getattr(c, "strong_evidence_domains", 0),
             "required_evidence_domains": getattr(c, "required_evidence_domains", 0),
             "adaptive_risk_mult": getattr(c, "adaptive_risk_mult", 1.0), "policy_risk_mult": getattr(c, "policy_risk_mult", 1.0), "rr": c.rr,
-            "entry": round(c.entry, 2), "sl": round(c.sl, 2), "tp": round(c.tp, 2), "target_kind": c.target_kind,
+            "entry": round_price(c.entry, abs(c.entry - c.sl)), "sl": round_price(c.sl, abs(c.entry - c.sl)),
+            "tp": round_price(c.tp, abs(c.entry - c.sl)), "target_kind": c.target_kind,
             "confidence": c.calib_conf, "p_win": c.p_win, "expected_r": c.exp_r, "meta_p": c.meta_p, "conflict": c.conflict,
             "mtf_alignment": list(c.alignment), "mtf_conflicts": list(c.mtf_conflicts), "barriers": list(c.barriers),
             "invalidation": dict(c.invalidation), "positive_evidence": pos, "negative_evidence": neg,
@@ -68,7 +71,9 @@ def _build(dec, ms, news, cfg, symbol="XAUUSD", stage="DECISION", risk=None, ref
                                             "blackout": news.blackout, "reason": news.blackout_reason, "bias": round(news.bias, 2),
                                             "confidence": round(news.confidence, 2), "risk_level": getattr(news, "risk_level", ""),
                                             "trade_veto": getattr(news, "trade_veto", False), "next_event": news.next_event,
-                                            "summary": news.summary if news.status == "OK" else ""},
+                                            "summary": news.summary if news.status == "OK" else "",
+                                            "intel_id": getattr(news, "intel_id", ""), "llm_bias": getattr(news, "llm_bias", 0.0),
+                                            "llm_influence": getattr(news, "llm_influence", "none")},
         "liquidity": lm.narrative() if lm is not None else "",
         "macro": d1.get("macro_levels", {}), "drivers": getattr(ms, "aux", None),
         "gate": gate, "risk_authorization": risk, "m1_refinement": refine, "execution": execution,

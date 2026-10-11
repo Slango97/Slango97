@@ -41,7 +41,7 @@ The model is advisory only. It has no direct broker order tool.
 
 - `DRY_RUN`: analysis and simulation only.
 - `DEMO`: real MT5 orders on a demo account.
-- `LIVE`: real account; requires `CONFIRM_LIVE=YES_I_UNDERSTAND`.
+- `LIVE`: real account; requires `CONFIRM_LIVE=YES_I_UNDERSTAND` AND a recorded `rollout.py promote --to LIVE_PILOT` for that account (V5.10).
 
 Keep `BRAIN__ENFORCE=false` until the V5 brain has been validated in DRY_RUN and DEMO.
 

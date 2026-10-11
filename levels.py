@@ -6,6 +6,8 @@ Breakout retest                -> measured move of the prior range
 Mean reversion                 -> middle of the range
 """
 
+from pricefmt import round_price
+
 TREND_SETUPS = ("TREND_PULLBACK", "TREND_CONTINUATION", "BOS_PULLBACK", "ORDER_BLOCK_RETEST", "FVG_RETEST")
 
 
@@ -42,7 +44,7 @@ def limit_price(dec, price, atr, cfg):
     d = dec.direction
     if (price - mid) * d < cfg.execution.limit_min_improve_atr * atr or (mid - dec.sl) * d <= 0:
         return None
-    return round(mid, 2)
+    return round_price(mid, atr)
 
 
 MACRO_BARRIERS = {1: ("PMH", "PYH", "CMH", "CYH"), -1: ("PML", "PYL", "CML", "CYL")}
@@ -128,4 +130,5 @@ def compute(setup, d, price, zone, vz, vs, lmap, regime_label, S, cfg, spread, s
     if rr < min_rr:
         return None, f"reward/risk {rr:.2f} below {min_rr}"
     return {"sl": sl, "tp": tp, "rr": round(rr, 2), "risk": risk, "target_kind": kind, "notes": notes,
-            "barriers": bars_[:4], "invalidation": {"stop": round(sl, 2), "zone": [round(zone["bottom"], 2), round(zone["top"], 2)], "entry_side": round(trade_price, 2)}}, None
+            "barriers": bars_[:4], "invalidation": {"stop": round_price(sl, risk), "zone": [round_price(zone["bottom"], risk), round_price(zone["top"], risk)],
+                             "entry_side": round_price(trade_price, risk)}}, None

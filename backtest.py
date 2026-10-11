@@ -35,7 +35,7 @@ from metrics import format_report, summarize
 from microstructure import score_market
 from news import NewsContext
 from regime import classify as classify_regime
-from risk import RiskCore
+from risk import RiskCore, exposure_scale
 import multiprocessing as mp
 from config import phases_for
 from costs import CostModel
@@ -67,6 +67,10 @@ class BTConfig:
     price_basis: str = "bid"              # MT5 builds CFD/forex bars from BID prices (official MT5 help); "mid" if yours are mid
     bars: int = 500
     min_tf_bars: int = 60
+    # V5.6 multi-market research: instrument-specific spread cap (points) mirroring the live dynamic cap for
+    # index/energy/crypto, and the weekend rule of the instrument profile. None/False = V5.5 gold behaviour.
+    spread_cap_points: float = None
+    trades_weekends: bool = False
 
 
 @dataclass
@@ -212,7 +216,7 @@ def swap_nights(t_open, t_close):
 
 
 def compact(v):
-    return {"atr": v["atr"], "close": v["close"], "ema20": v["ema20"],
+    return {"atr": v["atr"], "close": v["close"], "ema20": v["ema20"], "atr_ratio": v.get("atr_ratio"),
             "swing_lows": v["swing_lows"][-5:], "swing_highs": v["swing_highs"][-5:]}
 
 
@@ -304,7 +308,7 @@ class Backtester:
                 continue
             lo = max(0, i - 90)
             micro = score_market(cfg.micro, SP[i], float(np.median(SP[max(0, i - 60):i + 1])), O[lo:i + 1], H[lo:i + 1],
-                                 L[lo:i + 1], C[lo:i + 1], TV[lo:i + 1], cfg.execution.max_spread_points * bt.point)
+                                 L[lo:i + 1], C[lo:i + 1], TV[lo:i + 1], (bt.spread_cap_points or cfg.execution.max_spread_points) * bt.point)
             es = eng.state(tn, lambda: (micro.range_ratio, micro.spread_ratio))
             news = NewsContext(status="NO_DATA", blackout=es.blackout, blackout_reason=es.reason, event_phase=es.phase,
                                event_bias=es.surprise_bias, impact="high" if es.blackout else "low")
@@ -329,6 +333,7 @@ class Backtester:
         cfg = cfg or self.cfg
         bt, st, ex = self.bt, cfg.strategy, cfg.execution
         core = RiskCore(cfg)
+        core.spread_cap_points, core.trades_weekends = bt.spread_cap_points, bt.trades_weekends
         O, H, L, C, idx = prep.O, prep.H, prep.L, prep.C, prep.idx
         SP = self.spreads(prep)
         from risk import calendar_risk_multiplier, configured_calendar_families
@@ -398,6 +403,7 @@ class Backtester:
             rec = {k: p[k] for k in ("direction", "style", "setup", "score", "technical", "session", "vol_regime", "regime",
                                      "risk_tier", "news_condition", "event_phase", "entry", "signal_price", "slippage_r",
                                      "spread", "lots0", "target_kind", "p_win", "exp_r", "conflict", "market_quality")}
+            rec["risk_frac"] = p.get("risk_frac")             # V5.7: actual equity fraction risked (after scaling)
             rec.update(open_time=p["opened"], close_time=t, exit=px, net=p["net"], r=r, reason=reason,
                        mfe_r=round(p["mfe"], 3), mae_r=round(p["mae"], 3), be_regret=regret,
                        hold_h=(t - p["opened"]).total_seconds() / 3600)
@@ -453,7 +459,9 @@ class Backtester:
                     bad = abs(dec.tp - fill) / dist < min_rr * 0.9
                 if not bad:
                     eq = balance + floating(max(i - 1, 0))
-                    risk_pct = dec.risk_pct * core.risk_multiplier(rs["streak"]) * cal_mult
+                    scale, _ = exposure_scale(cfg.risk, 100 * (rs["peak"] - eq) / rs["peak"],
+                                              dp.mgmt[S.tf].get("atr_ratio"), rs.get("day_eq"))
+                    risk_pct = dec.risk_pct * core.risk_multiplier(rs["streak"]) * cal_mult * scale
                     lpl = dist * bt.contract_size
                     lots = core.lots_for(eq * risk_pct / 100, lpl, bt.volume_step, bt.volume_min, bt.volume_max)
                     margin = lots * bt.contract_size * fill / bt.leverage
@@ -467,7 +475,7 @@ class Backtester:
                     positions.append({
                         "direction": d, "entry": fill, "sl": dec.sl, "sl0": dec.sl, "tp": dec.tp, "tp1": getattr(dec, "tp1", None),
                         "tp1_frac": cfg.strategy.tp1_close_frac, "risk": dist,
-                        "risk_money": lots * lpl, "lots": lots, "lots0": lots, "style": dec.style, "setup": dec.setup,
+                        "risk_money": lots * lpl, "risk_frac": lots * lpl / eq, "lots": lots, "lots0": lots, "style": dec.style, "setup": dec.setup,
                         "score": dec.score, "technical": dec.technical, "session": dec.session, "vol_regime": dec.vol_regime,
                         "regime": dec.regime, "risk_tier": dec.risk_tier, "target_kind": dec.target_kind, "p_win": dec.p_win,
                         "exp_r": dec.exp_r, "conflict": dec.conflict, "market_quality": dec.market_quality,
@@ -529,6 +537,8 @@ class Backtester:
             eq = balance + floating(i)
             if rs["day"] != day:
                 rs.update(day=day, day0=eq, today=0)
+                rs.setdefault("day_eq", []).append(eq)        # V5.7: same account-volatility input as live
+                del rs["day_eq"][:-61]
             if rs["week"] != week:
                 rs.update(week=week, week0=eq)
             rs["peak"] = max(rs["peak"], eq)
