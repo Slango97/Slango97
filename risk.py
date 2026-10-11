@@ -281,6 +281,10 @@ class RiskEngine:
                 r["paused_until"] = new.isoformat()
                 if self.journal:
                     self.journal.event("throttle_extended", regime=regime_label, until=r["paused_until"])
+        import rollout
+        _, max_open = rollout.limits(self.cfg)
+        if max_open is not None and len(positions) >= max_open:
+            return False, f"LIVE_PILOT: at most {max_open} open trade(s)"
         day0, wk0, peak = r["day_start_equity"], r["week_start_equity"], r["peak"]
         return self.core.gate(
             self.c.utc_now(), self.c.spread_points(), len(positions), r.get("trades_today", 0),
@@ -307,6 +311,10 @@ class RiskEngine:
         mult = self.core.risk_multiplier(self.state.risk.get("loss_streak", 0))
         scale, scale_parts = self.exposure_scale(atr_ratio)
         risk_pct = dec.risk_pct * mult * scale
+        import rollout
+        stage_cap, _ = rollout.limits(self.cfg)
+        if stage_cap is not None:
+            risk_pct = min(risk_pct, stage_cap)              # V5.10 LIVE_PILOT ceiling
         # Account-aware risk ceiling. This makes micro/small accounts usable without
         # ever allowing a percentage above the configured 1-2% discipline.
         try:
@@ -328,6 +336,7 @@ class RiskEngine:
         lots = self.core.lots_for(eq * risk_pct / 100, lpl, info.volume_step, info.volume_min, info.volume_max)
         det = {"risk_pct_requested": risk_pct, "loss_per_lot": lpl, "streak_mult": mult,
                "exposure_scale": scale, **{f"scale_{k}": v for k, v in scale_parts.items()},
+               "rollout_risk_cap_pct": stage_cap,
                "account_risk_cap_pct": account_cap if 'account_cap' in locals() else None,
                "account_equity": float(eq)}
         if lots <= 0:

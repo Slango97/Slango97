@@ -1,4 +1,11 @@
-# Slango Pro Trader — V5.9 (Expert AI Agent Pro Trader)
+# Slango Pro Trader — V5.10 (Expert AI Agent Pro Trader)
+
+## V5.10 enforced deployment ladder (see V5_10_CHANGELOG.md, ROLLOUT_AR.md)
+
+DRY_RUN -> DEMO -> LIVE_PILOT -> LIVE_FULL is now enforced by `rollout.py`, judged from the system's own journals:
+LIVE refuses to start unless the connected real account was promoted (recorded, hash-chained, with evidence);
+LIVE_PILOT trades at most 0.25% with one position; live stages are reviewed daily and demoted automatically.
+`ROLLOUT_STATUS_WINDOWS.bat` shows the checklist. Suite: 303 passed.
 
 ## V5.9 AI influence must be earned with evidence (see V5_9_CHANGELOG.md, AI_EVIDENCE_AR.md)
 
@@ -302,6 +309,8 @@ shadow mode shows it helps on your data.
 3. After the first good install: `pip freeze > requirements.lock` and use that file from then on.
 
 ## Promotion path
+
+> V5.10: this path is now ENFORCED in software by `rollout.py` (criteria in ROLLOUT_AR.md / V5_10_CHANGELOG.md).
 
 | Stage | What | Pass criterion (suggested) |
 |---|---|---|

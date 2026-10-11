@@ -595,6 +595,31 @@ class ShadowConfig:
 
 
 @dataclass(frozen=True)
+class RolloutConfig:
+    """V5.10 enforced deployment ladder: DRY_RUN -> DEMO -> LIVE_PILOT -> LIVE_FULL (rollout.py)."""
+    enforce_live: bool = True               # LIVE mode needs a recorded LIVE_PILOT/LIVE_FULL promotion for THIS account
+    state_file: str = "data/rollout.json"   # account-wide (shared by multi-market instances)
+    max_incidents: int = 0                  # critical incidents tolerated inside the stage being judged
+    dry_run_min_days: float = 10.0
+    dry_run_min_signals: int = 20           # simulated entries in DRY_RUN
+    demo_min_days: float = 20.0
+    demo_min_trades: int = 40
+    demo_min_pf: float = 1.2
+    demo_max_dd_pct: float = 8.0
+    demo_max_slippage_r: float = 0.10       # mean |slippage| in R must stay this small
+    pilot_risk_pct: float = 0.25            # LIVE_PILOT: per-trade risk ceiling
+    pilot_max_open_trades: int = 1
+    pilot_min_days: float = 20.0
+    pilot_min_trades: int = 30
+    pilot_min_pf: float = 1.2
+    pilot_max_dd_pct: float = 6.0
+    pilot_max_expectancy_gap_r: float = 0.15  # live pilot expectancy may trail DEMO by at most this
+    demote_window_trades: int = 20          # automatic review of the last N trades in a live stage
+    demote_pf_below: float = 0.8
+    demote_dd_pct: float = 5.0              # drawdown inside the live stage that triggers demotion
+
+
+@dataclass(frozen=True)
 class BrainConfig:
     """Python-native V5 brain/workflow settings.  No external agent orchestrator is required."""
     enabled: bool = True
@@ -671,6 +696,7 @@ class Config:
     macro: MacroConfig = field(default_factory=MacroConfig)
     shadow: ShadowConfig = field(default_factory=ShadowConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
+    rollout: RolloutConfig = field(default_factory=RolloutConfig)
 
     @property
     def dry_run(self):
@@ -691,7 +717,7 @@ class Config:
                     m1=env_override(c.m1, "M1"), reliability=env_override(c.reliability, "RELIABILITY"),
                     notify=env_override(c.notify, "NOTIFY"), learning=env_override(c.learning, "LEARNING"),
                     macro=env_override(c.macro, "MACRO"), shadow=env_override(c.shadow, "SHADOW"),
-                    brain=env_override(c.brain, "BRAIN"))
+                    brain=env_override(c.brain, "BRAIN"), rollout=env_override(c.rollout, "ROLLOUT"))
         sysc = c.system
         extra = {}
         if os.getenv("SYMBOL"):

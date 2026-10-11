@@ -188,7 +188,8 @@ class AgentEngine:
     def status_text(self):
         s = self.health.snapshot(self.lifecycle.value, self.client, self.state, self.risk)
         d = self.last_decision
-        return (f"{self.lifecycle.value} {self.halt_reason}\nequity {s.get('equity')} | positions {s.get('open_positions')} | "
+        import rollout
+        return (f"{self.lifecycle.value} {self.halt_reason} | rollout {rollout.stage(self.cfg)}\nequity {s.get('equity')} | positions {s.get('open_positions')} | "
                 f"day P/L {s.get('day_pnl')}\nregime {self.regime.label if self.regime else '?'} | "
                 f"last decision {d.action + ' ' + (d.wait_reason or d.setup) if d else 'none'}")
 
@@ -215,6 +216,7 @@ class AgentEngine:
         for w in warns:
             log.info("broker: %s", w)
         problems += errs
+        problems += self._rollout_startup_checks()
         self.set_lifecycle(Lifecycle.SYNCING)
         if cfg.dry_run and self.client.positions():
             self.alerts.send("WARN", "Agent positions exist but mode is DRY_RUN: they are NOT being managed. "
@@ -243,6 +245,41 @@ class AgentEngine:
             self.set_lifecycle(Lifecycle.RUNNING)
             self._apply_profile()
             self.alerts.send("INFO", f"Agent started in {cfg.system.mode} mode on {self.client.symbol}", key="start")
+
+    def _rollout_startup_checks(self):
+        """V5.10 deployment ladder: LIVE only on the promoted account; DEMO before promotion is advisory."""
+        import rollout
+        try:
+            st = rollout.ensure(self.cfg)
+        except Exception as ex:
+            return [f"rollout state unavailable: {ex}"] if self.cfg.system.mode == "LIVE" and self.cfg.rollout.enforce_live else []
+        acc = self.client.account()
+        ok, why = rollout.live_permission(self.cfg, getattr(acc, "login", None), getattr(acc, "server", ""))
+        if not ok:
+            return [why]
+        if self.cfg.system.mode == "DEMO" and st.get("stage") == "DRY_RUN":
+            self.alerts.send("WARN", "Running DEMO before the DRY_RUN stage was passed: `python rollout.py status` "
+                                     "shows what is missing (advisory: no real money at risk).", key="rollout_demo")
+        self.journal.event("rollout_stage", stage=st.get("stage"), since=st.get("since"))
+        return []
+
+    def rollout_review(self):
+        """Daily: a failing live stage is demoted (FULL -> PILOT) or halted (PILOT) automatically."""
+        import rollout
+        try:
+            res = rollout.review(self.cfg)
+        except Exception as ex:
+            log.warning("rollout review failed: %s", ex)
+            return None
+        if res is None:
+            return None
+        kind, msg = res
+        self.journal.event("rollout_review", action=kind, detail=msg)
+        if kind == "demote":
+            self.alerts.send("CRITICAL", "ROLLOUT DEMOTION: " + msg, key="rollout_demote")
+        else:
+            self.set_lifecycle(Lifecycle.HALTED, "rollout: " + msg)
+        return res
 
     # ---- data -------------------------------------------------------
     def refresh_views(self, force=False):
@@ -874,6 +911,9 @@ class AgentEngine:
         today = str(now.date())
         self.routine_reports(now)
         self.ai_evidence_daily(now)
+        if getattr(self, "_rollout_day", None) != today:
+            self._rollout_day = today
+            self.rollout_review()
         if self._report_day == today or now.hour != self.cfg.emergency.daily_report_hour_utc:
             return
         self._report_day = today
