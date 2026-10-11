@@ -375,8 +375,12 @@ def _loadings():
     # factor loadings used to derive correlations between symbols (cosine similarity)
     return {"XAUUSD": {"USD": -0.6, "GOLD": 1.0}, "XAGUSD": {"USD": -0.6, "GOLD": 0.85, "SILVER": 0.5},
             "EURUSD": {"USD": -1.0, "EUR": 0.6}, "GBPUSD": {"USD": -1.0, "GBP": 0.6},
-            "AUDUSD": {"USD": -1.0, "AUD": 0.6, "GOLD": 0.2}, "USDJPY": {"USD": 1.0, "JPY": -0.6},
-            "USDCHF": {"USD": 1.0, "CHF": -0.6}}
+            "AUDUSD": {"USD": -1.0, "AUD": 0.6, "GOLD": 0.2, "EQ": 0.2}, "USDJPY": {"USD": 1.0, "JPY": -0.6},
+            "USDCHF": {"USD": 1.0, "CHF": -0.6},
+            # V5.8: the rest of the watchlist (prior for the live matrix; used alone when no fresh matrix exists)
+            "USDCAD": {"USD": 1.0, "CAD": -0.6, "OIL": -0.2},
+            "US30": {"EQ": 1.0, "USD": -0.1}, "NAS100": {"EQ": 1.0, "TECH": 0.4, "USD": -0.1},
+            "USOIL": {"OIL": 1.0, "EQ": 0.2, "USD": -0.2}, "BTCUSD": {"CRYPTO": 1.0, "EQ": 0.4, "USD": -0.2}}
 
 
 @dataclass(frozen=True)
@@ -384,6 +388,18 @@ class PortfolioConfig:
     max_correlated_exposure_pct: float = 1.5
     loadings: dict = field(default_factory=_loadings)
     unknown_correlation: float = 0.5
+    # V5.8 live correlation matrix (correlation_matrix.py)
+    live_correlation: bool = True
+    corr_timeframe: str = "H1"
+    corr_lookback_bars: int = 720          # ~6 weeks of H1: the slow estimate
+    corr_short_bars: int = 120             # ~1 week: catches correlation spikes in stress
+    corr_min_overlap: int = 60             # fewer common bars than this -> the window is ignored (prior used)
+    corr_shrink_k: float = 100.0           # shrinkage toward the factor prior: weight n / (n + k)
+    corr_refresh_min: float = 60.0
+    corr_max_age_h: float = 12.0           # older matrix -> factor prior
+    corr_hedge_credit: float = 0.5         # share of a hedge's theoretical risk reduction that is believed
+    corr_report_threshold: float = 0.7     # |rho| shown as a cluster in the daily report
+    corr_file: str = "data/correlation_matrix.json"
 
 
 def _event_classes():

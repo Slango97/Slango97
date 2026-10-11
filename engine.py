@@ -809,6 +809,14 @@ class AgentEngine:
                 self.v5_brain.reporter.exposure_report(scale, parts)
         except Exception as ex:
             log.debug("exposure scale unavailable: %s", ex)
+        try:                                        # V5.8 live cross-market correlation matrix (hourly)
+            resolve = (lambda mk: self.v5_brain.universe.resolve(self.client, mk)) if self.v5_brain is not None else None
+            m = self.risk.portfolio.refresh_matrix_if_due(list(self.cfg.brain.watchlist), resolve)
+            if m is not None:
+                self.journal.event("correlation_matrix", markets=len(m.data.get("markets", [])),
+                                   strong=m.strong_pairs(self.cfg.portfolio.corr_report_threshold)[:8])
+        except Exception as ex:
+            log.debug("correlation matrix refresh failed: %s", ex)
         if self.v5_brain is not None and self.lifecycle == Lifecycle.RUNNING:
             try:
                 self.v5_brain.scan_universe_if_due(primary_views=self.views)

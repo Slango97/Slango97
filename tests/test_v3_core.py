@@ -266,8 +266,9 @@ def test_portfolio_correlation_and_aggregate_risk():
     pc = CFG.portfolio
     assert correlation("XAUUSD", "XAGUSD", pc) > 0.8 and correlation("XAUUSD", "USDJPY", pc) < 0
     same = portfolio_risk_pct([("XAUUSD", 0.5), ("XAGUSD", 0.5)], pc)
-    hedge = portfolio_risk_pct([("XAUUSD", 0.5), ("XAGUSD", -0.5)], pc)
-    assert same > 0.9 and hedge < 0.3
+    full_trust = portfolio_risk_pct([("XAUUSD", 0.5), ("XAGUSD", -0.5)], pc, hedge_credit=1.0)
+    hedge = portfolio_risk_pct([("XAUUSD", 0.5), ("XAGUSD", -0.5)], pc)    # V5.8: hedges only half trusted
+    assert same > 0.9 and full_trust < 0.3 and full_trust < hedge < same and hedge < 0.71
 
 
 def test_portfolio_check_blocks_stacked_correlated_risk():

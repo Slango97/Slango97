@@ -309,6 +309,9 @@ class V5Reporter:
             lines.append(f"Best current market: {best.symbol or best.requested} (health {best.health:.0f})")
         if self.last_run is not None:
             lines.append("Active: " + self._health_line(self.last_run))
+        corr = self._correlation_line()
+        if corr:
+            lines.append(corr)
         lines.append("Analysis only — orders remain controlled by the deterministic execution kernel.")
         self.tg.text("\n".join(lines))
 
@@ -325,6 +328,21 @@ class V5Reporter:
         icon, title = ("🟢", "RISK BACK TO FULL SIZE") if band >= 1.0 else ("🟠", "RISK SCALED DOWN")
         self.tg.text(self._head(icon, title) + f"\nPer-trade risk x{scale:.2f} ({why}){extra}\n"
                      "Scaling only reduces risk; it recovers automatically as equity and volatility normalise.")
+
+    def _correlation_line(self):
+        """V5.8: strongest live correlations (markets that are effectively the same bet)."""
+        try:
+            from correlation_matrix import CorrelationMatrix
+            pc = self.cfg.portfolio
+            m = CorrelationMatrix.load(pc.corr_file)
+            if m is None or m.age_h() > pc.corr_max_age_h:
+                return ""
+            top = m.strong_pairs(pc.corr_report_threshold)[:6]
+            if not top:
+                return "Correlation: no market pair above " + f"{pc.corr_report_threshold:.1f}"
+            return "Correlated (one bet, sized together): " + ", ".join(f"{p} {v:+.2f}" for p, v in top)
+        except Exception:
+            return ""
 
     # ---- trade lifecycle --------------------------------------------------------
     def trade_entry_feedback(self, trade_record, dec=None, frames=None):

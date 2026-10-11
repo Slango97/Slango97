@@ -1,4 +1,11 @@
-# Slango Pro Trader — V5.7 (Expert AI Agent Pro Trader)
+# Slango Pro Trader — V5.8 (Expert AI Agent Pro Trader)
+
+## V5.8 live cross-market correlation matrix (see V5_8_CHANGELOG.md, CORRELATION_MATRIX_AR.md)
+
+Portfolio risk now uses correlations measured every hour from the broker's H1 bars for the whole watchlist (long and
+short window, shrunk toward the factor prior), maps broker names (XAUUSDs, US30Cash) to markets, sizes each pair at
+the more dangerous end of its range and only half-trusts hedges. Stale matrix -> factor prior (now covering all 12
+markets). Daily report lists the correlated clusters. Suite: 283 passed.
 
 ## V5.7 drawdown- and volatility-aware exposure scaling (see V5_7_CHANGELOG.md, EXPOSURE_SCALING_AR.md)
 
