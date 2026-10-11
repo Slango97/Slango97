@@ -72,6 +72,13 @@ class NewsContext:
     rules_families: dict = field(default_factory=dict)
     rules_conflicts: list = field(default_factory=list)
     events: list = field(default_factory=list)   # V5.5: structured recent/upcoming events (id, local-time-ready)
+    # V5.9 attribution + evidence gate: the LLM's own contribution and how much it may influence decisions
+    intel_id: str = ""
+    llm_bias: float = 0.0
+    llm_confidence: float = 0.0
+    llm_influence: str = "none"               # none | reduce_only | full
+    support_bias: float = None                # bias/confidence allowed to ADD score (LLM excluded unless proven);
+    support_confidence: float = None          # None = no restriction (contexts not built by NewsEngine.get)
 
 
 def _default_http(url, timeout, contact=""):
@@ -438,6 +445,22 @@ class NewsEngine:
         return (f"Current time: {now:%Y-%m-%d %H:%M} UTC\n\nHeadlines:\n" + ("\n".join(lines) or "none")
                 + f"\n\nInstrument: {sym} | high-impact {cur} events (recent / next 24h):\n" + (ev_txt or "none"))
 
+    def _log_intel(self, data, now):
+        """V5.9: every LLM opinion is kept so intel_evaluation.py can score it against what price did next."""
+        try:
+            row = {"id": data["id"], "t": datetime.fromtimestamp(data["fetched_at"], timezone.utc).isoformat(timespec="seconds"),
+                   "instrument": getattr(self.profile, "symbol", None) or "XAUUSD",
+                   "provider": getattr(self._llm, "last_provider", "custom"),
+                   "bias": BIAS[data.get("instrument_bias", data["gold_bias"])], "confidence": data["confidence"],
+                   "risk_level": data["risk_level"], "trade_veto": data["trade_veto"],
+                   "expiry_minutes": data["expiry_minutes"], "headlines": len(self.heads), "summary": data["summary"][:200]}
+            p = Path(self.ic.log_file)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+        except Exception as ex:
+            log.warning("intel log write failed: %s", ex)
+
     def refresh(self):
         """Network work (call from a background thread). Never raises."""
         now = self._clock()
@@ -474,6 +497,8 @@ class NewsEngine:
             data, notes = enforce(data, self.heads, self.ic)
             data["fetched_at"] = time.time()
             data["expires_at"] = data["fetched_at"] + 60 * data["expiry_minutes"]
+            data["id"] = hashlib.md5(f"{data['fetched_at']}|{h}".encode()).hexdigest()[:12]
+            self._log_intel(data, now)
             self.intel, self.intel_status, self.intel_notes, self.heads_hash = data, "OK", notes, h
             self.intel["provider"] = getattr(self._llm, "last_provider", "custom")
             self.errors["intel"] = ""
@@ -538,6 +563,7 @@ class NewsEngine:
             if age < life:
                 b1 = BIAS[intel.get("instrument_bias", intel["gold_bias"])]
                 c1 = intel["confidence"] * (1 - 0.5 * age / life)
+                ctx.intel_id, ctx.llm_bias, ctx.llm_confidence = intel.get("id", ""), b1, round(c1, 4)
                 ctx.risk_level, ctx.trade_veto = intel["risk_level"], intel["trade_veto"]
                 ctx.drivers, ctx.contradictions = intel["key_drivers"], intel["contradictions"]
                 ctx.summary, ctx.expires_in_min = intel["summary"], round((life - age) / 60, 1)
@@ -547,6 +573,12 @@ class NewsEngine:
             ctx.bias = (b1 * c1 + b2 * c2) / (c1 + c2)
             ctx.confidence = min(1.0, max(c1, c2) + 0.25 * min(c1, c2))
             ctx.status = "OK"
+        ctx.support_bias, ctx.support_confidence = ctx.bias, ctx.confidence
+        if c1 > 0:
+            from intel_evidence import llm_influence
+            ctx.llm_influence = llm_influence(self.cfg)
+            if ctx.llm_influence != "full":            # unproven LLM: may oppose/veto, may not add score
+                ctx.support_bias, ctx.support_confidence = (b2, c2) if c2 > 0 else (0.0, 0.0)
         else:
             ctx.status = "NO_DATA" if self.intel_status in ("NO_DATA", "DISABLED") else "UNKNOWN"
         ctx.impact = "high" if es.blackout or ctx.risk_level in ("high", "extreme") else "medium" if ctx.risk_level == "medium" else "low"

@@ -344,6 +344,21 @@ class V5Reporter:
         except Exception:
             return ""
 
+    def ai_evidence_report(self, ev):
+        """V5.9: report the AI evidence verdicts only when one of them changes."""
+        n, v = ev.get("news_intel", {}), ev.get("v5_brain_veto", {})
+        if not self.nm.state_changed("ai_evidence", [n.get("verdict"), v.get("verdict")]):
+            return
+        h = next(iter((n.get("horizons") or {}).values()), {})
+        infl = "may ADD score" if n.get("verdict") == "PROVEN" else "may only REDUCE risk"
+        icon = {"PROVEN": "✅", "HARMFUL": "⚠️"}.get(n.get("verdict"), "🔬")
+        self.tg.text(self._head(icon, "AI EVIDENCE UPDATE") + "\n"
+                     f"News AI: {n.get('verdict')} — {n.get('summary', '')}\n"
+                     f"Hit rate {h.get('hit_rate')} on {h.get('decided', 0)} decided calls | AI news {infl}\n"
+                     f"V5 brain vetoes: {v.get('verdict')} — {v.get('summary', '')}\n"
+                     f"Recommendation: {v.get('enforce_recommendation', '')}"
+                     + ("\nConsider FEATURES__USE_LLM=false: the AI news layer is measurably hurting." if n.get("verdict") == "HARMFUL" else ""))
+
     # ---- trade lifecycle --------------------------------------------------------
     def trade_entry_feedback(self, trade_record, dec=None, frames=None):
         ticket = trade_record.get("ticket") or f"{trade_record.get('symbol')}:{trade_record.get('setup')}:{trade_record.get('entry')}"

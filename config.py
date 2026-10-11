@@ -460,6 +460,17 @@ class IntelConfig:
     compat_key_env: str = "COMPAT_API_KEY"
     veto_requires_reliable_source: bool = True
     min_veto_reliability: float = 0.6
+    # V5.9 evidence gate: an LLM view may always REDUCE risk (opposition, veto); it may ADD score only after
+    # intel_evaluation.py has shown, out of sample, that its direction calls beat chance.
+    evidence_gate: bool = True
+    log_file: str = "data/intel_log.jsonl"
+    outcomes_file: str = "data/intel_outcomes.jsonl"
+    evidence_file: str = "data/intel_evidence.json"
+    evidence_min_samples: int = 50        # directional opinions needed before any verdict
+    evidence_min_vetoes: int = 20         # blocked candidates needed to judge the veto
+    evidence_alpha: float = 0.05          # one-sided binomial significance for "better than a coin"
+    evidence_max_age_days: float = 30.0
+    evidence_horizons_min: tuple = (60, 240)
 
 
 @dataclass(frozen=True)

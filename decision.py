@@ -355,7 +355,11 @@ def apply_policy(cands, ms, news, cfg, exclude=(), calibration=None, edge_book=N
         elif news_ok and nb <= -nc.soft_opposition_threshold:
             policy_mult = min(policy_mult, pc.soft_news_risk_mult)
             c.reasons.append(f"soft news opposition reduction ({nb:+.2f})")
-        c.components["news"] = round(min(cfg.strategy.news_max_bonus, cfg.strategy.news_max_bonus * nb), 1) if nb >= nc.support_from else 0.0
+        # V5.9: the score BONUS uses only evidence allowed to add (an unproven LLM view is excluded); opposition
+        # and vetoes above still use the full view because they can only reduce risk.
+        sb, sc_ = getattr(news, "support_bias", None), getattr(news, "support_confidence", None)
+        nb_sup = (sb * sc_ * c.direction if sb is not None and sc_ is not None else nb) if news_ok else 0.0
+        c.components["news"] = round(min(cfg.strategy.news_max_bonus, cfg.strategy.news_max_bonus * nb_sup), 1) if nb_sup >= nc.support_from else 0.0
         c.score = round(min(100.0, c.technical + c.components["news"]), 1)
         if calibration is not None:
             pr = calibration.predict(c.score, c.setup, c.regime, c.session)

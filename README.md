@@ -1,4 +1,11 @@
-# Slango Pro Trader — V5.8 (Expert AI Agent Pro Trader)
+# Slango Pro Trader — V5.9 (Expert AI Agent Pro Trader)
+
+## V5.9 AI influence must be earned with evidence (see V5_9_CHANGELOG.md, AI_EVIDENCE_AR.md)
+
+Every AI news view is logged and later scored against what price actually did (ATR-normalised, exact binomial test
+vs a coin); vetoed candidates and V5-brain vetoes get counterfactual R. Until the news AI is PROVEN it may only
+reduce risk (oppose / veto), never add score; the V5 veto evidence tells you whether BRAIN__ENFORCE is justified.
+Runs daily on live prices and offline from exported history. Suite: 293 passed.
 
 ## V5.8 live cross-market correlation matrix (see V5_8_CHANGELOG.md, CORRELATION_MATRIX_AR.md)
 

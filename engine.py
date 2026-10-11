@@ -850,9 +850,30 @@ class AgentEngine:
         except Exception as ex:
             log.warning("routine report failed: %s", ex)
 
+    def ai_evidence_daily(self, now):
+        """V5.9: once a day score yesterday's AI opinions / vetoes against live MT5 prices and refresh the verdict."""
+        today = str(now.date())
+        if getattr(self, "_ai_eval_day", None) == today or not hasattr(self.client, "rates_for"):
+            return None
+        self._ai_eval_day = today
+        try:
+            from intel_evaluation import collect, evaluate, publish
+            new = collect(self.cfg, lambda sym: self.client.rates_for(sym, "M5", 6000)[0])
+            ev = evaluate(self.cfg)
+            publish(self.cfg, ev)
+            self.journal.event("ai_evidence", new_items=len(new), news=ev["news_intel"]["verdict"],
+                               v5=ev["v5_brain_veto"]["verdict"])
+            if self.v5_brain is not None:
+                self.v5_brain.reporter.ai_evidence_report(ev)
+            return ev
+        except Exception as ex:
+            log.warning("AI evidence evaluation failed (trading unaffected): %s", ex)
+            return None
+
     def daily_report(self, now):
         today = str(now.date())
         self.routine_reports(now)
+        self.ai_evidence_daily(now)
         if self._report_day == today or now.hour != self.cfg.emergency.daily_report_hour_utc:
             return
         self._report_day = today
